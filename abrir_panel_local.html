@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Abrir panel local</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 36em; margin: 2rem; line-height: 1.5; }
+    code { background: #eee; padding: 0.15em 0.35em; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Panel de recupero (local)</h1>
+  <p>
+    <a href="http://127.0.0.1:8000/">http://127.0.0.1:8000/</a>
+  </p>
+  <p><strong>Orden obligatorio:</strong> 1) Doble clic en <code>ejecutar_panel_web.bat</code> y dejá la ventana negra abierta.
+    2) Cuando diga que Uvicorn está en el puerto 8000, recién ahí abrís este enlace o escribís la URL en Chrome.</p>
+  <p>Si ves “conexión rechazada” (<code>ERR_CONNECTION_REFUSED</code>), el servidor no está corriendo: volvé al paso 1.</p>
+  <p>Requiere: <code>pip install -e ".[web]"</code></p>
+</body>
+</html>

@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tasa-estadistica"
+version = "0.1.0"
+description = "Extracción ARCA/AFIP: liquidaciones, conceptos y tasa de estadística (MVP local)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "tzdata>=2024.1",
+    "cryptography>=42.0.0",
+    "openpyxl>=3.1.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+    "zeep>=4.2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.4.0"]
+web = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "jinja2>=3.1.0",
+    "httpx>=0.27.0",
+    "python-multipart>=0.0.9",
+]
+
+[project.scripts]
+tasa-arca = "tasa_estadistica.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"tasa_estadistica.web" = ["templates/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Bootstrap sys.path vía importlib antes del resto de imports.
+"**/tasa_estadistica/web/app.py" = ["E402"]
+"**/tasa_estadistica/cli.py" = ["E402"]
+# load_dotenv() antes de imports del paquete (mismo patrón que bootstrap).
+"**/scripts/debug_wsaa_once.py" = ["E402", "I001"]

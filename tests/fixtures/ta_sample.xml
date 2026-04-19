@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<loginTicketResponse version="1.0">
+  <header>
+    <source>CN=wsaahomo</source>
+    <destination>serialNumber=CUIT 12345678901, CN=...</destination>
+    <uniqueId>12345678</uniqueId>
+    <generationTime>2026-04-02T10:00:00-03:00</generationTime>
+    <expirationTime>2026-04-02T11:00:00-03:00</expirationTime>
+  </header>
+  <credentials>
+    <token>PD94bWwgdmVyc2lvbj0iMS4wIj8+</token>
+    <sign>SUVOX1RPS0VO</sign>
+  </credentials>
+</loginTicketResponse>

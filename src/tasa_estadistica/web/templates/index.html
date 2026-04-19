@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Recupero tasa estadística — panel local</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --card: #1a2332;
+      --text: #e7ecf3;
+      --muted: #8b9cb3;
+      --accent: #3d8bfd;
+      --ok: #3ecf8e;
+      --border: #2a3544;
+      --highlight: rgba(62, 207, 142, 0.18);
+    }
+    html {
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 1.5rem;
+      line-height: 1.5;
+    }
+    .wrap { max-width: 1200px; margin: 0 auto; }
+    h1 { font-size: 1.35rem; font-weight: 600; margin: 0 0 0.25rem; }
+    .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 1.5rem; }
+    .badge {
+      display: inline-block;
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.75rem;
+      padding: 0.2rem 0.5rem;
+      border-radius: 6px;
+      margin-bottom: 1rem;
+    }
+    form {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: flex-end;
+      margin-bottom: 1.5rem;
+    }
+    label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.8rem; color: var(--muted); }
+    input[type="date"] {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.45rem 0.6rem;
+      border-radius: 8px;
+      font-size: 0.95rem;
+    }
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.95rem;
+    }
+    button:hover { filter: brightness(1.08); }
+    a.btn-export {
+      display: inline-block;
+      align-self: flex-end;
+      background: var(--card);
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.95rem;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    a.btn-export:hover { filter: brightness(1.08); }
+    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem; }
+    @media (max-width: 600px) { .cards { grid-template-columns: 1fr; } }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+    }
+    .card.destacado {
+      border-color: var(--ok);
+      box-shadow: 0 0 0 1px rgba(62, 207, 142, 0.25);
+    }
+    .card h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0 0 0.35rem; }
+    .card .hint { font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; line-height: 1.35; }
+    .big { font-size: 1.85rem; font-weight: 700; color: var(--ok); font-variant-numeric: tabular-nums; }
+    .big.n { color: var(--text); font-size: 1.75rem; }
+    .table-section h3 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin: 0 0 0.5rem;
+      color: var(--text);
+    }
+    .table-section .hint { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.75rem; }
+    /*
+      Grilla con display:grid + filas con display:contents: todas las celdas comparten la misma
+      plantilla de columnas (si usáramos flex por fila, cada fila mediría sola y los encabezados
+      no alinearían con los datos).
+    */
+    .detalle-borde {
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--card);
+    }
+    .detalle-scroll {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 0.5rem 0.6rem 0.75rem;
+    }
+    .detalle-grid {
+      display: grid;
+      gap: 0;
+      width: max-content;
+      min-width: min(100%, max-content);
+    }
+    .detalle-fila {
+      display: contents;
+    }
+    .detalle-celda {
+      box-sizing: border-box;
+      padding: 0.45rem 0.55rem;
+      white-space: nowrap;
+      min-width: 0;
+      max-width: 28rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-size: 0.8125rem;
+      line-height: 1.4;
+      color: #e7ecf3;
+      border-right: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      background: #1a2332;
+    }
+    .detalle-celda.detalle-celda-fin {
+      border-right: none;
+    }
+    .detalle-celda.detalle-cab {
+      background: #131c28;
+      color: #8b9cb3;
+      font-weight: 600;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+    .detalle-celda.detalle-monto {
+      background: rgba(62, 207, 142, 0.22);
+      color: #3ecf8e;
+      font-weight: 600;
+    }
+    .detalle-celda.detalle-cab.detalle-monto {
+      background: rgba(62, 207, 142, 0.15);
+      color: #3ecf8e;
+    }
+    @media (forced-colors: active) {
+      .detalle-celda {
+        color: CanvasText;
+        border-color: CanvasText;
+      }
+      .detalle-borde {
+        border-color: CanvasText;
+      }
+    }
+    .celda-override {
+      background: rgba(61, 139, 253, 0.12) !important;
+      color: var(--accent);
+    }
+    .badge-override {
+      color: var(--accent);
+      font-weight: 700;
+      margin-left: 0.15rem;
+    }
+    .empty { color: var(--muted); padding: 1.5rem; text-align: center; }
+    .cobertura {
+      background: rgba(61, 139, 253, 0.12);
+      border: 1px solid rgba(61, 139, 253, 0.45);
+      border-radius: 12px;
+      padding: 1rem 1.15rem;
+      margin-bottom: 1.25rem;
+    }
+    .cobertura h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); margin: 0 0 0.5rem; }
+    .cobertura p { margin: 0; font-size: 0.85rem; color: var(--text); line-height: 1.45; }
+    footer { margin-top: 2rem; font-size: 0.75rem; color: var(--muted); }
+    footer code { font-size: 0.7rem; word-break: break-all; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="badge">Demo local · misma grilla que Excel recupero_V2 · archivo: {{ db_name }}</div>
+    <p class="sub" style="margin-top: -0.75rem; margin-bottom: 1rem; font-size: 0.75rem;">SQLite usado por el panel y por <code>tasa-arca export-recupero</code> (ruta absoluta):<br><code>{{ sqlite_path }}</code></p>
+    <h1>Recupero de tasa de estadística</h1>
+    <p class="sub">
+      Columnas alineadas al export <strong>recupero_tasa.xlsx</strong> (hoja <code>recupero_V2</code>).
+      Monto por despacho = conceptos <strong>011 + 061 + 062</strong> (ARS). CUIT referencia: {{ cuit_default }}
+    </p>
+    <p class="sub" style="font-size: 0.8rem; color: var(--muted); margin-top: -0.5rem;">
+      Período por <strong>fecha de liquidación</strong> en ARCA. Datos analíticos desde {{ fecha_min_iso }}.
+      {% if fecha_max_iso %}«Hasta» como máximo {{ fecha_max_iso }}.{% endif %}
+    </p>
+    {% if period_presets %}
+    <p class="sub" style="font-size: 0.8rem; margin-top: -0.25rem;">
+      Atajos:
+      {% for p in period_presets %}
+      <a href="/?desde={{ p.desde }}&hasta={{ p.hasta }}">{{ p.label }}</a>{% if not loop.last %} · {% endif %}
+      {% endfor %}
+    </p>
+    {% endif %}
+
+    {% if sqlite_cobertura %}
+    <div class="cobertura" role="region" aria-label="Cobertura de datos en SQLite">
+      <h2>Qué hay realmente en tu base</h2>
+      <p>
+        En SQLite hay <strong>{{ sqlite_cobertura.total_filas }}</strong> fila(s) de liquidación con fecha entre
+        <strong>{{ sqlite_cobertura.min_fecha }}</strong> y <strong>{{ sqlite_cobertura.max_fecha }}</strong>.
+        El panel <em>no inventa años</em>: si elegís un rango largo pero solo descargaste un mes de prueba (p. ej. mayo 2025),
+        solo vas a ver datos de lo que esté guardado en ese intervalo. Para otro año o mes, ejecutá
+        <strong>Descargar liquidaciones</strong> con esas fechas o <code>tasa-arca fetch --desde YYYY-MM-DD --hasta YYYY-MM-DD</code>.
+      </p>
+    </div>
+    {% endif %}
+
+    <form method="get" action="/">
+      <label>Desde
+        <input type="date" name="desde" value="{{ desde.isoformat() }}" required min="{{ fecha_min_iso }}"{% if fecha_max_iso %} max="{{ fecha_max_iso }}"{% endif %}>
+      </label>
+      <label>Hasta
+        <input type="date" name="hasta" value="{{ hasta.isoformat() }}" required min="{{ fecha_min_iso }}"{% if fecha_max_iso %} max="{{ fecha_max_iso }}"{% endif %}>
+      </label>
+      <button type="submit">Actualizar</button>
+      <a class="btn-export" href="/export/recupero.xlsx?desde={{ desde.isoformat() }}&hasta={{ hasta.isoformat() }}">Descargar Excel</a>
+    </form>
+
+    {% if panel_fetch_enabled %}
+    <div class="card" style="margin-top: 1rem;">
+      <h2 style="font-size: 0.95rem; margin: 0 0 0.5rem;">Descargar liquidaciones desde AFIP</h2>
+      <p class="hint" style="margin-bottom: 0.5rem;">
+        Usa las fechas del formulario de arriba. Rangos largos se consultan por <strong>tramos de 30 días</strong>
+        (el servidor va pidiendo mes a mes y respeta pausas entre llamadas). Dejá esta página abierta: verás el avance abajo hasta que termine.
+        En <strong>MOA</strong>, después de «Buscando listados» AFIP puede tardar <strong>varios minutos</strong> por variante
+        (timeout típico 120&nbsp;s por llamada); el texto debería ir cambiando (DetalladaLista / SIMI). Si no cambia en mucho más de ese tiempo, revisá red o <code>tasa-arca auth</code>.
+      </p>
+      <p class="hint" style="margin-bottom: 0.75rem;">
+        En <code>live</code> necesitás WSDL, CUIT y ticket (<code>tasa-arca auth</code>). En <code>mock</code> guarda datos de prueba al instante.
+      </p>
+      <button type="button" id="btn-panel-fetch">Descargar liquidaciones</button>
+      <div id="panel-fetch-status" class="hint" style="margin-top: 0.75rem; min-height: 1.5rem; color: var(--accent);" aria-live="polite"></div>
+    </div>
+    <script>
+    (function () {
+      const btn = document.getElementById('btn-panel-fetch');
+      const st = document.getElementById('panel-fetch-status');
+      if (!btn || !st) return;
+      function esc(s) {
+        const d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+      }
+      btn.addEventListener('click', async function () {
+        const desdeEl = document.querySelector('input[name="desde"]');
+        const hastaEl = document.querySelector('input[name="hasta"]');
+        const desde = desdeEl && desdeEl.value;
+        const hasta = hastaEl && hastaEl.value;
+        if (!desde || !hasta) {
+          st.innerHTML = 'Indicá <strong>desde</strong> y <strong>hasta</strong> en el formulario.';
+          return;
+        }
+        btn.disabled = true;
+        st.innerHTML = 'Iniciando…';
+        let pollTimer = null;
+        try {
+          const r = await fetch('/api/fetch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ desde: desde, hasta: hasta, cuit: null }),
+          });
+          if (r.status === 409) {
+            st.innerHTML = 'Ya hay una descarga en curso. Esperá a que termine.';
+            btn.disabled = false;
+            return;
+          }
+          if (!r.ok) {
+            let detail = r.statusText;
+            try {
+              const j = await r.json();
+              if (j.detail) detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
+            } catch (e) { /* ignore */ }
+            st.innerHTML = 'Error: ' + esc(detail);
+            btn.disabled = false;
+            return;
+          }
+          const data = await r.json();
+          const jobId = data.job_id;
+          if (!jobId) {
+            st.innerHTML = 'Respuesta inválida del servidor.';
+            btn.disabled = false;
+            return;
+          }
+          const tick = async function () {
+            const rs = await fetch('/api/fetch/status/' + encodeURIComponent(jobId));
+            if (!rs.ok) {
+              if (pollTimer) clearInterval(pollTimer);
+              st.innerHTML = 'No se pudo leer el estado (' + rs.status + ').';
+              btn.disabled = false;
+              return;
+            }
+            const j = await rs.json();
+            const p = j.progress;
+            let line = '<strong>Buscando…</strong> ';
+            if (p && p.message) {
+              line += esc(p.message);
+              if (p.current != null && p.total) {
+                line += ' <span style="opacity:0.85">(' + esc(String(p.current)) + '/' + esc(String(p.total)) + ')</span>';
+              }
+            } else {
+              line += 'conectando con el servicio…';
+            }
+            st.innerHTML = line;
+            if (j.status === 'done') {
+              if (pollTimer) clearInterval(pollTimer);
+              const n = (j.result && j.result.n_liquidaciones) != null ? j.result.n_liquidaciones : '?';
+              st.innerHTML = 'Listo: ' + esc(String(n)) + ' liquidación(es) guardadas. Recargando…';
+              setTimeout(function () { window.location.reload(); }, 900);
+              return;
+            }
+            if (j.status === 'error') {
+              if (pollTimer) clearInterval(pollTimer);
+              st.innerHTML = 'Error: ' + esc(j.error || 'desconocido').replace(/\n/g, '<br>');
+              btn.disabled = false;
+            }
+          };
+          await tick();
+          pollTimer = setInterval(tick, 1000);
+        } catch (e) {
+          st.innerHTML = 'Error de red: ' + esc(String(e));
+          btn.disabled = false;
+        }
+      });
+    })();
+    </script>
+    <div class="card" style="margin-top: 1rem;">
+      <details>
+        <summary style="cursor: pointer; font-weight: 600;">
+          Histórico (backfill 2019 → hoy)
+        </summary>
+        <p class="hint" style="margin: 0.75rem 0 0.5rem;">
+          Procesa el rango <strong>mes a mes</strong> y guarda el estado de cada uno
+          (<code>ok</code> / <code>sin_datos</code> / <code>error</code>). Si lo cortás
+          y lo volvés a correr, salta los meses que ya están <strong>ok</strong>.
+          Pensado para backfillear varios años para una empresa nueva.
+        </p>
+        <form id="backfill-form" style="margin-bottom: 0.75rem;">
+          <label>Mes desde
+            <input type="month" id="backfill-desde" required value="2025-01">
+          </label>
+          <label>Mes hasta
+            <input type="month" id="backfill-hasta" required value="{{ hasta.strftime('%Y-%m') }}">
+          </label>
+          <label style="flex-direction: row; align-items: center; gap: 0.4rem; color: var(--text);">
+            <input type="checkbox" id="backfill-reintentar"> Reintentar meses con error
+          </label>
+          <label style="flex-direction: row; align-items: center; gap: 0.4rem; color: var(--text);">
+            <input type="checkbox" id="backfill-forzar"> Forzar todos los meses
+          </label>
+          <button type="submit" id="btn-backfill">Iniciar backfill</button>
+          <button type="button" id="btn-backfill-refresh" style="background: var(--card); border: 1px solid var(--accent); color: var(--accent);">Refrescar grilla</button>
+        </form>
+        <div id="backfill-status" class="hint" style="min-height: 1.4rem; color: var(--accent);" aria-live="polite"></div>
+        <div id="backfill-grid-wrap" style="margin-top: 0.75rem;"></div>
+        <p class="hint" style="margin-top: 0.5rem;">
+          Click en una celda <strong>error</strong>/<strong>sin_datos</strong>/<strong>pendiente</strong> reintenta ese mes.
+          Las celdas verdes (<strong>ok</strong>) se reintentan sólo con «Forzar todos los meses» activado.
+        </p>
+      </details>
+    </div>
+    <style>
+      .bf-grid { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+      .bf-grid th, .bf-grid td { border: 1px solid var(--border); padding: 0.25rem 0.35rem; text-align: center; }
+      .bf-grid th { color: var(--muted); font-weight: 500; }
+      .bf-grid td.bf-cell { cursor: pointer; }
+      .bf-cell.bf-ok        { background: rgba(62, 207, 142, 0.35); color: #fff; }
+      .bf-cell.bf-sin_datos { background: rgba(255, 196, 0, 0.30);  color: #fff; }
+      .bf-cell.bf-error     { background: rgba(255, 80, 80, 0.40);  color: #fff; }
+      .bf-cell.bf-pendiente { background: rgba(139, 156, 179, 0.18); color: var(--muted); }
+      .bf-cell.bf-en_proceso{ background: rgba(61, 139, 253, 0.30); color: #fff; }
+      .bf-cell.bf-fuera     { background: transparent; color: var(--muted); opacity: 0.45; cursor: default; }
+    </style>
+    <script>
+    (function () {
+      const form = document.getElementById('backfill-form');
+      const btn = document.getElementById('btn-backfill');
+      const btnR = document.getElementById('btn-backfill-refresh');
+      const st  = document.getElementById('backfill-status');
+      const grid = document.getElementById('backfill-grid-wrap');
+      if (!form || !btn || !st || !grid) return;
+      const MESES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+
+      function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+      function parseYM(v) {
+        const m = (v || '').match(/^(\d{4})-(\d{2})$/);
+        if (!m) return null;
+        return { anio: parseInt(m[1], 10), mes: parseInt(m[2], 10) };
+      }
+
+      async function loadGrid() {
+        const d = document.getElementById('backfill-desde').value;
+        const h = document.getElementById('backfill-hasta').value;
+        const dp = parseYM(d); const hp = parseYM(h);
+        if (!dp || !hp) { grid.innerHTML = '<p class="hint">Indicá un rango válido (YYYY-MM).</p>'; return; }
+        const url = '/api/backfill/meses?desde=' + encodeURIComponent(d) + '&hasta=' + encodeURIComponent(h);
+        const r = await fetch(url);
+        if (!r.ok) { grid.innerHTML = '<p class="hint">No se pudo cargar la grilla (' + r.status + ').</p>'; return; }
+        const data = await r.json();
+        const byKey = {};
+        for (const m of (data.meses || [])) byKey[m.anio + '-' + m.mes] = m;
+
+        let html = '<table class="bf-grid"><thead><tr><th>Año</th>';
+        for (const n of MESES) html += '<th>' + n + '</th>';
+        html += '</tr></thead><tbody>';
+        const inRange = function (a, m) {
+          if (a < dp.anio || a > hp.anio) return false;
+          if (a === dp.anio && m < dp.mes) return false;
+          if (a === hp.anio && m > hp.mes) return false;
+          return true;
+        };
+        for (let a = dp.anio; a <= hp.anio; a++) {
+          html += '<tr><td>' + a + '</td>';
+          for (let m = 1; m <= 12; m++) {
+            if (!inRange(a, m)) {
+              html += '<td class="bf-cell bf-fuera">·</td>';
+              continue;
+            }
+            const f = byKey[a + '-' + m];
+            const est = f ? (f.estado || 'pendiente') : 'pendiente';
+            const tip = f
+              ? (est + ' · n_decl=' + (f.n_declaraciones ?? '?') + ' · n_liq=' + (f.n_liquidaciones ?? '?')
+                  + (f.ultimo_error ? ' · err: ' + f.ultimo_error.slice(0, 80) : ''))
+              : 'pendiente';
+            html += '<td class="bf-cell bf-' + est + '" data-anio="' + a + '" data-mes="' + m + '" data-estado="' + est + '" title="' + esc(tip) + '">' + (f ? est[0].toUpperCase() : '·') + '</td>';
+          }
+          html += '</tr>';
+        }
+        html += '</tbody></table>';
+        grid.innerHTML = html;
+
+        grid.querySelectorAll('td.bf-cell').forEach(function (td) {
+          if (td.classList.contains('bf-fuera')) return;
+          td.addEventListener('click', async function () {
+            const a = parseInt(td.getAttribute('data-anio'), 10);
+            const m = parseInt(td.getAttribute('data-mes'), 10);
+            const est = td.getAttribute('data-estado');
+            if (est === 'ok' && !document.getElementById('backfill-forzar').checked) {
+              if (!confirm('Mes ' + a + '-' + m + ' ya está OK. ¿Reintentar igual?')) return;
+            }
+            st.textContent = 'Reintentando ' + a + '-' + String(m).padStart(2,'0') + '…';
+            const rr = await fetch('/api/backfill/reintentar-mes', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ anio: a, mes: m })
+            });
+            if (rr.status === 409) { st.textContent = 'Ya hay un backfill en curso.'; return; }
+            if (!rr.ok) { st.textContent = 'Error ' + rr.status; return; }
+            const j = await rr.json();
+            pollJob(j.job_id, function () { loadGrid(); });
+          });
+        });
+      }
+
+      function pollJob(jobId, onDone) {
+        let timer = null;
+        const tick = async function () {
+          const r = await fetch('/api/backfill/status/' + encodeURIComponent(jobId));
+          if (!r.ok) { if (timer) clearInterval(timer); st.textContent = 'No se pudo leer el estado.'; btn.disabled = false; return; }
+          const j = await r.json();
+          const p = j.progress || {};
+          let line = '';
+          if (p.fase === 'mes_inicio' || p.fase === 'mes_fin') {
+            line = 'Mes ' + (p.i || '?') + '/' + (p.total || '?') + ' (' + (p.mes || '?') + ')';
+            if (p.fase === 'mes_fin') line += ' → ' + (p.estado || '?');
+          } else if (p.fase === 'inicio') {
+            line = 'Iniciando ' + (p.total || 0) + ' meses…';
+          } else if (p.fase === 'fin') {
+            line = 'Listo: ' + (p.ok || 0) + ' ok, ' + (p.sin_datos || 0) + ' sin_datos, ' + (p.error || 0) + ' error.';
+          } else {
+            line = 'Procesando…';
+          }
+          st.textContent = line;
+          if (j.status === 'done') {
+            if (timer) clearInterval(timer);
+            const r2 = j.result || {};
+            st.textContent = 'Listo. ok=' + (r2.ok || 0) + ' sin_datos=' + (r2.sin_datos || 0) + ' error=' + (r2.error || 0) + '.';
+            btn.disabled = false;
+            if (onDone) onDone();
+          }
+          if (j.status === 'error') {
+            if (timer) clearInterval(timer);
+            st.textContent = 'Error: ' + (j.error || 'desconocido');
+            btn.disabled = false;
+            if (onDone) onDone();
+          }
+        };
+        tick();
+        timer = setInterval(tick, 1500);
+      }
+
+      form.addEventListener('submit', async function (ev) {
+        ev.preventDefault();
+        const desde = document.getElementById('backfill-desde').value;
+        const hasta = document.getElementById('backfill-hasta').value;
+        const dp = parseYM(desde); const hp = parseYM(hasta);
+        if (!dp || !hp) { st.textContent = 'Rango inválido.'; return; }
+        const desdeISO = desde + '-01';
+        const lastDay = new Date(hp.anio, hp.mes, 0).getDate();
+        const hastaISO = hasta + '-' + String(lastDay).padStart(2, '0');
+        btn.disabled = true;
+        st.textContent = 'Iniciando…';
+        const r = await fetch('/api/backfill', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            desde: desdeISO,
+            hasta: hastaISO,
+            reintentar_errores: document.getElementById('backfill-reintentar').checked,
+            forzar: document.getElementById('backfill-forzar').checked,
+          }),
+        });
+        if (r.status === 409) { st.textContent = 'Ya hay un backfill en curso.'; btn.disabled = false; return; }
+        if (!r.ok) {
+          let detail = r.statusText;
+          try { const j = await r.json(); if (j.detail) detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail); } catch (e) {}
+          st.textContent = 'Error: ' + detail; btn.disabled = false; return;
+        }
+        const j = await r.json();
+        pollJob(j.job_id, loadGrid);
+      });
+
+      btnR.addEventListener('click', function () { loadGrid(); });
+      document.getElementById('backfill-desde').addEventListener('change', loadGrid);
+      document.getElementById('backfill-hasta').addEventListener('change', loadGrid);
+      // Carga inicial diferida (no bloquear el render del panel).
+      setTimeout(loadGrid, 200);
+    })();
+    </script>
+    {% endif %}
+
+    <div class="cards">
+      <div class="card destacado">
+        <h2>Monto total tasa en el período (ARS)</h2>
+        <div class="big">{{ total_ars_fmt }}</div>
+        <p class="hint">
+          Suma de <strong>T.E. TOTAL COBRADA</strong> por cada despacho IC (mismo total que en la columna resaltada de la tabla).
+          Las columnas tipo «A solicitar», excedentes, T.E. correcta y CIF siguen la misma lógica que el Excel modelo (hoja <code>V2_Ejemplo</code>) cuando hay datos AFIP (alícuota, FOB/FLETE/SEGURO, TC).
+        </p>
+      </div>
+      <div class="card">
+        <h2>Despachos que pasan el filtro ({{ destinacion_subcadenas }})</h2>
+        <div class="big n">{{ n_despachos }}</div>
+        <p class="hint">
+          En el período hay <strong>{{ n_liquidaciones_en_rango }}</strong> fila(s) de liquidación en SQLite
+          y <strong>{{ n_destinaciones_distintas_en_rango }}</strong> destinación(es) distinta(s).
+          La tabla muestra una fila por despacho cuyo identificador contiene alguna de esas subcadenas (configurable en <code>TASA_RECUPERO_DESTINACION_SUBCADENAS</code>).
+          Si acá ves menos filas que liquidaciones en total, otras operaciones pueden usar identificadores distintos (ej. sin «IC») o la base puede estar incompleta: ejecutá <code>tasa-arca fetch</code> para el rango.
+        </p>
+      </div>
+    </div>
+
+    {% if filas %}
+    <div class="table-section">
+      <h3>Detalle (mismas columnas que el Excel)</h3>
+      <p class="hint">{{ filas|length }} registro(s). Desplazá horizontalmente si no entran todas. La columna <strong>T.E. TOTAL COBRADA</strong> es el monto de tasa liquidada por despacho. FOB/FLETE/SEGURO salen del JSON AFIP/MOA si están en la liquidación; <strong>CIF DOCUMENTAL</strong> y el resto de columnas numéricas posteriores replican las fórmulas del Excel (vacías si falta algún insumo).</p>
+      {% if recupero_avisos_fob %}
+      <div class="hint" style="margin:0.75rem 0;padding:0.65rem 0.85rem;border:1px solid #6b7a8a;border-radius:6px;background:rgba(255,200,100,0.12)">
+        {% for aviso in recupero_avisos_fob %}
+        <p style="margin:0.35rem 0">{{ aviso }}</p>
+        {% endfor %}
+      </div>
+      {% endif %}
+      <div class="detalle-borde">
+        <div class="detalle-scroll">
+          <div class="detalle-grid" style="grid-template-columns: repeat({{ columnas|length }}, minmax(4.5rem, max-content));" role="grid">
+          <div class="detalle-fila detalle-head" role="row">
+            {% for col in columnas %}
+            <div class="detalle-celda detalle-cab{% if col == 'T.E. TOTAL COBRADA' %} detalle-monto{% endif %}{% if loop.last %} detalle-celda-fin{% endif %}" role="columnheader">{{ col }}</div>
+            {% endfor %}
+          </div>
+          {% for fila in filas %}
+          {%- set dest_id = (fila.get('D.I.') or '')|string|trim -%}
+          {%- set tiene_override = dest_id and (recupero_overrides|default({})).get(dest_id) -%}
+          <div class="detalle-fila" role="row">
+            {% for col in columnas %}
+            <div class="detalle-celda{% if col == 'T.E. TOTAL COBRADA' %} detalle-monto{% endif %}{% if loop.last %} detalle-celda-fin{% endif %}{% if tiene_override and col in ('FOB','FLETE','SEGURO') %} celda-override{% endif %}" role="gridcell" {% if tiene_override and col in ('FOB','FLETE','SEGURO') %}title="Valor cargado manualmente (override) — ver sección inferior para editar."{% endif %}>{%- set texto = fila.get(col) -%}
+              {%- if texto is none or (texto|string|trim) == '' -%}—{%- else -%}{{ texto }}{% if tiene_override and col in ('FOB','FLETE','SEGURO') %} <span class="badge-override" aria-hidden="true">*</span>{% endif %}{%- endif -%}
+            </div>
+            {% endfor %}
+          </div>
+          {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="overrides-section" style="margin-top:1.25rem">
+        <details open>
+          <summary style="cursor:pointer;font-size:0.9rem;color:var(--muted);padding:0.35rem 0">
+            Valores manuales (FOB / Flete / Seguro) — override cuando AFIP no los informa
+          </summary>
+          <div class="card" style="margin-top:0.6rem">
+            <p class="hint" style="margin-top:0">
+              Precedencia: <strong>override manual &gt; AFIP</strong>. Dejá un campo vacío para que vuelva a pedirse el valor AFIP. El asterisco <code>*</code> junto al número marca filas con valor manual.
+            </p>
+            <form id="override-form" onsubmit="return false" style="gap:0.6rem">
+              <label style="min-width:11rem">D.I.
+                <select name="destinacion_id" id="override-dest" required>
+                  {% for fila in filas %}
+                    {%- set did = (fila.get('D.I.') or '')|string|trim -%}
+                    {% if did %}
+                      <option value="{{ did }}">{{ did }}</option>
+                    {% endif %}
+                  {% endfor %}
+                </select>
+              </label>
+              <label>FOB (U$S)
+                <input type="text" name="fob" id="override-fob" placeholder="ej. 15772,00" style="width:9rem;background:var(--card);border:1px solid var(--border);color:var(--text);padding:0.45rem 0.6rem;border-radius:8px">
+              </label>
+              <label>FLETE (U$S)
+                <input type="text" name="flete" id="override-flete" placeholder="1264,63" style="width:9rem;background:var(--card);border:1px solid var(--border);color:var(--text);padding:0.45rem 0.6rem;border-radius:8px">
+              </label>
+              <label>SEGURO (U$S)
+                <input type="text" name="seguro" id="override-seguro" placeholder="85,18" style="width:9rem;background:var(--card);border:1px solid var(--border);color:var(--text);padding:0.45rem 0.6rem;border-radius:8px">
+              </label>
+              <label style="flex:1;min-width:12rem">Nota (opcional)
+                <input type="text" name="nota" id="override-nota" placeholder="Origen del valor (ej. despacho físico)" style="background:var(--card);border:1px solid var(--border);color:var(--text);padding:0.45rem 0.6rem;border-radius:8px">
+              </label>
+              <button type="button" id="btn-override-save">Guardar override</button>
+              <button type="button" id="btn-override-delete" style="background:var(--card);color:var(--text);border:1px solid var(--border)">Borrar</button>
+            </form>
+            <div id="override-status" class="hint" style="margin-top:0.5rem;color:var(--accent);min-height:1.25rem" aria-live="polite"></div>
+            <hr style="border:none;border-top:1px solid var(--border);margin:1rem 0">
+            <p class="hint" style="margin-top:0">
+              <strong>Carga masiva (CSV)</strong>: subí un <code>.csv</code> con encabezado
+              <code>destinacion_id;fob;flete;seguro;nota</code> (separador <code>;</code> o <code>,</code>).
+              Cada fila hace <em>upsert</em> del override.
+            </p>
+            <form id="override-csv-form" enctype="multipart/form-data" onsubmit="return false" style="gap:0.6rem">
+              <input type="file" name="archivo" id="override-csv-file" accept=".csv,text/csv" style="font-size:0.85rem">
+              <button type="button" id="btn-override-csv">Subir CSV</button>
+            </form>
+            <div id="override-csv-status" class="hint" style="margin-top:0.5rem;min-height:1.25rem" aria-live="polite"></div>
+          </div>
+        </details>
+      </div>
+    </div>
+    {% else %}
+    <div class="empty">No hay liquidaciones que coincidan con el filtro de importación ({{ destinacion_subcadenas }}) en ese rango. Si esperabas más operaciones, revisá el criterio o ejecutá <code>tasa-arca fetch</code> para cargar datos.</div>
+    {% endif %}
+
+    <script id="recupero-overrides-data" type="application/json">{{ (recupero_overrides|default({}))|tojson }}</script>
+    <script>
+    (function () {
+      const el = document.getElementById('recupero-overrides-data');
+      if (!el) return;
+      let overrides = {};
+      try { overrides = JSON.parse(el.textContent || '{}') || {}; } catch (e) { overrides = {}; }
+      const dest = document.getElementById('override-dest');
+      const fob = document.getElementById('override-fob');
+      const flete = document.getElementById('override-flete');
+      const seguro = document.getElementById('override-seguro');
+      const nota = document.getElementById('override-nota');
+      const st = document.getElementById('override-status');
+      const save = document.getElementById('btn-override-save');
+      const del = document.getElementById('btn-override-delete');
+      if (!dest) return;
+      function esc(s) {
+        const d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+      }
+      function applyFromDest() {
+        const o = overrides[dest.value] || null;
+        fob.value = (o && o.fob) || '';
+        flete.value = (o && o.flete) || '';
+        seguro.value = (o && o.seguro) || '';
+        nota.value = (o && o.nota) || '';
+        if (o) {
+          st.textContent = 'Override cargado actualmente para este D.I. — modificá y guardá, o borralo.';
+        } else {
+          st.textContent = '';
+        }
+      }
+      dest.addEventListener('change', applyFromDest);
+      applyFromDest();
+      save.addEventListener('click', async function () {
+        save.disabled = true;
+        st.textContent = 'Guardando…';
+        try {
+          const r = await fetch('/api/recupero/override', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              destinacion_id: dest.value,
+              fob: fob.value || null,
+              flete: flete.value || null,
+              seguro: seguro.value || null,
+              nota: nota.value || null,
+            }),
+          });
+          if (!r.ok) {
+            let d = r.statusText;
+            try { const j = await r.json(); if (j.detail) d = j.detail; } catch (e) {}
+            st.innerHTML = 'Error: ' + esc(d);
+            save.disabled = false;
+            return;
+          }
+          st.textContent = 'Guardado. Recargando…';
+          setTimeout(function () { window.location.reload(); }, 400);
+        } catch (e) {
+          st.innerHTML = 'Error de red: ' + esc(String(e));
+          save.disabled = false;
+        }
+      });
+      const csvBtn = document.getElementById('btn-override-csv');
+      const csvFile = document.getElementById('override-csv-file');
+      const csvStatus = document.getElementById('override-csv-status');
+      if (csvBtn && csvFile && csvStatus) {
+        csvBtn.addEventListener('click', async function () {
+          if (!csvFile.files || !csvFile.files[0]) {
+            csvStatus.textContent = 'Elegí un archivo primero.';
+            return;
+          }
+          csvBtn.disabled = true;
+          csvStatus.textContent = 'Subiendo…';
+          const fd = new FormData();
+          fd.append('archivo', csvFile.files[0]);
+          try {
+            const r = await fetch('/api/recupero/override/csv', { method: 'POST', body: fd });
+            if (!r.ok) {
+              let d = r.statusText;
+              try { const j = await r.json(); if (j.detail) d = j.detail; } catch (e) {}
+              csvStatus.innerHTML = 'Error: ' + esc(d);
+              csvBtn.disabled = false;
+              return;
+            }
+            const j = await r.json();
+            const errs = (j.errores || []).length;
+            csvStatus.textContent = 'Procesadas ' + j.procesadas + (errs ? (' · errores: ' + errs) : '') + '. Recargando…';
+            setTimeout(function () { window.location.reload(); }, 700);
+          } catch (e) {
+            csvStatus.innerHTML = 'Error de red: ' + esc(String(e));
+            csvBtn.disabled = false;
+          }
+        });
+      }
+      del.addEventListener('click', async function () {
+        if (!dest.value) return;
+        if (!confirm('¿Borrar el override del D.I. ' + dest.value + '?')) return;
+        del.disabled = true;
+        st.textContent = 'Borrando…';
+        try {
+          const r = await fetch('/api/recupero/override/' + encodeURIComponent(dest.value), {
+            method: 'DELETE',
+          });
+          if (!r.ok) {
+            st.textContent = 'No se pudo borrar (' + r.status + ').';
+            del.disabled = false;
+            return;
+          }
+          st.textContent = 'Borrado. Recargando…';
+          setTimeout(function () { window.location.reload(); }, 400);
+        } catch (e) {
+          st.innerHTML = 'Error de red: ' + esc(String(e));
+          del.disabled = false;
+        }
+      });
+    })();
+    </script>
+
+    <footer>
+      Totales: <a href="/api/resumen?desde={{ desde.isoformat() }}&hasta={{ hasta.isoformat() }}">/api/resumen</a>
+      · Misma grilla que abajo (como el .xlsx): <a href="/api/recupero?desde={{ desde.isoformat() }}&hasta={{ hasta.isoformat() }}">/api/recupero</a>
+      · CLI: <code>tasa-arca export-recupero --desde {{ desde.isoformat() }} --hasta {{ hasta.isoformat() }}</code>
+      · Los montos reflejan lo persistido en la base; no reemplazan asesoramiento fiscal.
+    </footer>
+  </div>
+</body>
+</html>
