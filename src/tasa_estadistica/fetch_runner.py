@@ -7,8 +7,8 @@ import logging
 from datetime import date
 from typing import Any
 
-from tasa_estadistica.arca.auth_ticket_store import wsaa_ticket_expired
 from tasa_estadistica.arca.liquidaciones_client import FetchProgressFn, LiquidacionesClient
+from tasa_estadistica.arca.wsaa_client import WSAAClient
 from tasa_estadistica.config.date_policy import validate_analysis_period
 from tasa_estadistica.config.settings import Settings, get_tasa_mapper_from_settings
 from tasa_estadistica.model.schemas import RunParams
@@ -20,11 +20,13 @@ logger = logging.getLogger(__name__)
 def _enrich_fetch_error_message(message: str) -> str:
     """Añade pista accionable ante errores típicos de TA vencido en MOA/SOAP."""
     low = message.lower()
-    if "7008" in message or "token invalido" in low:
+    if "7008" in message or "token invalido" in low or "token inválido" in low:
         return (
             f"{message}\n\n"
             "Sugerencia: MOA/AFIP suele devolver 7008 cuando el Ticket de Acceso (WSAA) "
-            "venció o no coincide con el entorno. Ejecutá `tasa-arca auth` y volvé a descargar."
+            "venció o no coincide con el entorno. Ejecutá `tasa-arca auth --force` para "
+            "renovar el TA (el TA en disco puede parecer vigente pero no serlo para ese WS) "
+            "y volvé a descargar."
         )
     return message
 
@@ -60,22 +62,23 @@ def execute_fetch(
 
         ta_xml: bytes | None = None
         if modo == "live":
-            if not settings.arca_ticket_path.is_file():
+            if not settings.arca_cert_path or not settings.arca_cert_path.is_file():
                 return {
                     "ok": False,
                     "error": (
-                        f"No hay ticket en {settings.arca_ticket_path}. "
-                        "Ejecute: tasa-arca auth"
+                        "ARCA_MODE=live requiere certificado (.p12). "
+                        f"ARCA_CERT_PATH inválido o ausente: {settings.arca_cert_path}"
                     ),
                 }
-            ta_xml = settings.arca_ticket_path.read_bytes()
-            if wsaa_ticket_expired(ta_xml):
+            try:
+                wsaa = WSAAClient(settings)
+                ta_xml = wsaa.ensure_ticket(settings.arca_ticket_path)
+            except (OSError, ValueError, RuntimeError) as exc:
                 return {
                     "ok": False,
                     "error": (
-                        f"El ticket WSAA en {settings.arca_ticket_path} está vencido "
-                        "(expirationTime ya pasó). MOA responderá 7008 token inválido "
-                        "hasta renovarlo. Ejecute: tasa-arca auth"
+                        f"No se pudo obtener/reutilizar el ticket WSAA: {exc}\n"
+                        "Revise ARCA_CERT_PATH, ARCA_CERT_PASSWORD y ARCA_WSAA_SERVICE."
                     ),
                 }
 

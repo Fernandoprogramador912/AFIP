@@ -22,6 +22,7 @@ class TicketAcceso:
     sign: str
     generation_time: str | None = None
     expiration_time: str | None = None
+    service: str | None = None
 
 
 def _local(tag: str) -> str:
@@ -70,11 +71,13 @@ def parse_ticket_xml(xml_bytes: bytes) -> TicketAcceso:
         raise ValueError("XML de ticket inválido: faltan token/sign")
     gen = _find_text(root, "generationTime")
     exp = _find_text(root, "expirationTime")
+    service = _find_text(root, "service")
     return TicketAcceso(
         token=token,
         sign=sign,
         generation_time=gen,
         expiration_time=exp,
+        service=service,
     )
 
 

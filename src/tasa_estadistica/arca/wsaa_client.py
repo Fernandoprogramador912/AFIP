@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import logging
 import random
-import time
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -16,6 +15,7 @@ import requests
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.serialization import pkcs7, pkcs12
 
+from tasa_estadistica.arca.auth_ticket_store import wsaa_ticket_expired
 from tasa_estadistica.config.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -101,10 +101,21 @@ def resolve_tra_now(settings: Settings) -> datetime:
     return n
 
 
-def build_tra_xml(service: str, ttl_seconds: int = 600, *, now: datetime | None = None) -> bytes:
-    """Construye el XML loginTicketRequest (TRA)."""
+def build_tra_xml(
+    service: str,
+    ttl_seconds: int = 600,
+    *,
+    now: datetime | None = None,
+    leeway_back_seconds: int = 0,
+) -> bytes:
+    """Construye el XML loginTicketRequest (TRA).
+
+    `leeway_back_seconds` resta segundos a `generationTime` para tolerar un reloj
+    local adelantado respecto al de AFIP (mitigación complementaria a
+    `ARCA_WSAA_TIME_SOURCE=auto`). Default 0 (comportamiento previo).
+    """
     base = now if now is not None else datetime.now(AR_TZ)
-    gen = base
+    gen = base - timedelta(seconds=max(0, int(leeway_back_seconds)))
     exp = base + timedelta(seconds=ttl_seconds)
     unique_id = random.randint(1, 99_999_999)
 
@@ -237,14 +248,25 @@ class WSAAClient:
             raise ValueError("Respuesta WSAA no contiene loginTicketResponse")
         return ta_xml
 
-    def ensure_ticket(self, ticket_path: Path, max_age_seconds: int = 500) -> bytes:
-        """Reutiliza ticket en disco si parece reciente; si no, renueva."""
+    def ensure_ticket(
+        self,
+        ticket_path: Path,
+        *,
+        leeway: timedelta = timedelta(minutes=5),
+    ) -> bytes:
+        """Reutiliza el TA si `expirationTime` aún no venció; si no, renueva.
+
+        AFIP emite el TA con `expirationTime` ~12 h en el futuro: alcanza con respetar
+        esa fecha en vez de basarse en `mtime` del archivo. `leeway` agrega margen para
+        evitar usar un TA que esté a segundos de vencer (default 5 min).
+        """
         if ticket_path.is_file():
             try:
-                age = time.time() - ticket_path.stat().st_mtime
-                txt = ticket_path.read_text(encoding="utf-8", errors="replace")
-                if age < max_age_seconds and "loginTicketResponse" in txt:
-                    return ticket_path.read_bytes()
+                raw = ticket_path.read_bytes()
+                if b"loginTicketResponse" in raw and not wsaa_ticket_expired(
+                    raw, leeway=leeway
+                ):
+                    return raw
             except OSError:
                 pass
         ta = self.login_cms()
