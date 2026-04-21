@@ -176,13 +176,6 @@ def _retry_moa_call(
         return rta, retries_6013
 
 
-def _cuit_con_guiones(cuit: str) -> str:
-    d = "".join(ch for ch in cuit if ch.isdigit())
-    if len(d) != 11:
-        return cuit.strip()
-    return f"{d[:2]}-{d[2:10]}-{d[10]}"
-
-
 def _limpiar_params(p: dict[str, Any]) -> dict[str, Any]:
     """No enviar claves vacías al SOAP (algunos servicios las interpretan mal)."""
     return {k: v for k, v in p.items() if v is not None and v != ""}
@@ -193,22 +186,18 @@ def _variantes_auto_simi(
     hasta: datetime,
     cuit: str,
 ) -> list[tuple[str, dict[str, Any]]]:
+    # AFIP rechaza CUIT con guiones (42075). CodigoEstadoDeclaracion="TODOS" también es
+    # rechazado por longitud (42075); hay que pasar códigos válidos de 4 letras (OFIC/CANC/ANUL).
     b = {"FechaOficializacionDesde": desde, "FechaOficializacionHasta": hasta}
-    cg = _cuit_con_guiones(cuit)
     return [
         ("cuit_11", {**b, "CuitImportadorExportador": cuit}),
-        ("cuit_guiones", {**b, "CuitImportadorExportador": cg}),
-        (
-            "cuit_11_TODOS",
-            {**b, "CuitImportadorExportador": cuit, "CodigoEstadoDeclaracion": "TODOS"},
-        ),
         (
             "cuit_11_CANC",
             {**b, "CuitImportadorExportador": cuit, "CodigoEstadoDeclaracion": "CANC"},
         ),
         (
-            "cuit_guiones_TODOS",
-            {**b, "CuitImportadorExportador": cg, "CodigoEstadoDeclaracion": "TODOS"},
+            "cuit_11_ANUL",
+            {**b, "CuitImportadorExportador": cuit, "CodigoEstadoDeclaracion": "ANUL"},
         ),
     ]
 
@@ -218,20 +207,18 @@ def _variantes_auto_detallada(
     hasta: datetime,
     cuit: str,
 ) -> list[tuple[str, dict[str, Any]]]:
+    # AFIP rechaza CUIT con guiones y CodigoTipoOperacion=I/IC (42075). CodigoEstadoDeclaracion
+    # "TODOS" también es rechazado (longitud inválida); válidos: OFIC/CANC/ANUL/SUSP.
     b = {"FechaOficializacionDesde": desde, "FechaOficializacionHasta": hasta}
-    cg = _cuit_con_guiones(cuit)
     return [
         ("cuit_11", {**b, "CuitImportadorExportador": cuit}),
-        ("cuit_guiones", {**b, "CuitImportadorExportador": cg}),
-        ("cuit_11_I", {**b, "CuitImportadorExportador": cuit, "CodigoTipoOperacion": "I"}),
-        ("cuit_11_IC", {**b, "CuitImportadorExportador": cuit, "CodigoTipoOperacion": "IC"}),
-        (
-            "cuit_11_TODOS",
-            {**b, "CuitImportadorExportador": cuit, "CodigoEstadoDeclaracion": "TODOS"},
-        ),
         (
             "cuit_11_CANC",
             {**b, "CuitImportadorExportador": cuit, "CodigoEstadoDeclaracion": "CANC"},
+        ),
+        (
+            "cuit_11_ANUL",
+            {**b, "CuitImportadorExportador": cuit, "CodigoEstadoDeclaracion": "ANUL"},
         ),
     ]
 
@@ -242,17 +229,16 @@ def _variantes_minimal_simi(
     cuit: str,
 ) -> list[tuple[str, dict[str, Any]]]:
     """
-    Listado SIMI: la variante solo-CUIT suele omitir declaraciones según estado en AFIP.
-    Añadimos CUIT con guiones y estado TODOS (misma idea que variantes auto, menos llamadas).
+    Listado SIMI: la variante solo-CUIT omite CANC/ANUL (AFIP devuelve solo OFIC por defecto).
+    Agregamos `cuit_11_CANC` para capturar declaraciones canceladas (caso típico: D.I. de
+    importación retenidas). "TODOS" fue eliminado: AFIP lo rechaza con 42075 por longitud.
     """
     b = {"FechaOficializacionDesde": desde, "FechaOficializacionHasta": hasta}
-    cg = _cuit_con_guiones(cuit)
     return [
         ("cuit_11", {**b, "CuitImportadorExportador": cuit}),
-        ("cuit_guiones", {**b, "CuitImportadorExportador": cg}),
         (
-            "cuit_11_TODOS",
-            {**b, "CuitImportadorExportador": cuit, "CodigoEstadoDeclaracion": "TODOS"},
+            "cuit_11_CANC",
+            {**b, "CuitImportadorExportador": cuit, "CodigoEstadoDeclaracion": "CANC"},
         ),
     ]
 
@@ -263,18 +249,17 @@ def _variantes_minimal_detallada(
     cuit: str,
 ) -> list[tuple[str, dict[str, Any]]]:
     """
-    DetalladaListaDeclaraciones: una sola consulta por CUIT puede no devolver todas las IC.
-    Se añaden tipo operación IC, estado TODOS y CUIT con guiones (homologado con variantes auto).
+    DetalladaListaDeclaraciones: la variante solo-CUIT trae OFIC por defecto. Agregamos
+    `cuit_11_CANC` para que también aparezcan las canceladas. "TODOS" fue eliminado: AFIP
+    lo rechaza con 42075 "longitud invalida" (códigos válidos son de 4 letras: OFIC/CANC/
+    ANUL/SUSP).
     """
     b = {"FechaOficializacionDesde": desde, "FechaOficializacionHasta": hasta}
-    cg = _cuit_con_guiones(cuit)
     return [
         ("cuit_11", {**b, "CuitImportadorExportador": cuit}),
-        ("cuit_guiones", {**b, "CuitImportadorExportador": cg}),
-        ("cuit_11_IC", {**b, "CuitImportadorExportador": cuit, "CodigoTipoOperacion": "IC"}),
         (
-            "cuit_11_TODOS",
-            {**b, "CuitImportadorExportador": cuit, "CodigoEstadoDeclaracion": "TODOS"},
+            "cuit_11_CANC",
+            {**b, "CuitImportadorExportador": cuit, "CodigoEstadoDeclaracion": "CANC"},
         ),
     ]
 
@@ -478,9 +463,25 @@ def _ejecutar_variantes_simi(
     ok_any = False
     errs: list[str] = []
     to = int(settings.arca_liquidaciones_timeout)
+    # AFIP limita el mismo método MOA con el mismo CUIT a >=25s entre llamadas (error 6013);
+    # variantes del listado son todas SimiDjaiListaDeclaraciones → respetar ese intervalo.
+    sleep_entre_variantes = max(26.0, float(settings.arca_moa_chunk_sleep_seconds))
     for i, (label, parms) in enumerate(variantes):
         if i > 0:
-            time.sleep(1.5)
+            if on_progress:
+                scope = f"{progress_scope} · " if progress_scope else ""
+                on_progress(
+                    {
+                        "phase": "moa_listado_variante",
+                        "current": i + 1,
+                        "total": len(variantes),
+                        "message": (
+                            f"{scope}SIMI/DJAI: pausa {sleep_entre_variantes:.0f}s entre variantes "
+                            f"(AFIP exige >=25s por método/CUIT)…"
+                        ),
+                    }
+                )
+            time.sleep(sleep_entre_variantes)
         parms = _limpiar_params(parms)
         if on_progress:
             scope = f"{progress_scope} · " if progress_scope else ""
@@ -542,9 +543,25 @@ def _ejecutar_variantes_detallada(
     ok_any = False
     errs: list[str] = []
     to = int(settings.arca_liquidaciones_timeout)
+    # AFIP limita el mismo método MOA con el mismo CUIT a >=25s entre llamadas (error 6013);
+    # variantes del listado son todas DetalladaListaDeclaraciones → respetar ese intervalo.
+    sleep_entre_variantes = max(26.0, float(settings.arca_moa_chunk_sleep_seconds))
     for i, (label, parms) in enumerate(variantes):
         if i > 0:
-            time.sleep(1.5)
+            if on_progress:
+                scope = f"{progress_scope} · " if progress_scope else ""
+                on_progress(
+                    {
+                        "phase": "moa_listado_variante",
+                        "current": i + 1,
+                        "total": len(variantes),
+                        "message": (
+                            f"{scope}DetalladaLista: pausa {sleep_entre_variantes:.0f}s entre "
+                            f"variantes (AFIP exige >=25s por método/CUIT)…"
+                        ),
+                    }
+                )
+            time.sleep(sleep_entre_variantes)
         parms = _limpiar_params(parms)
         if on_progress:
             scope = f"{progress_scope} · " if progress_scope else ""
@@ -719,12 +736,31 @@ def fetch_moa_declaracion_liquidaciones(
             }
         )
 
+    # AFIP limita cada método MOA a >=25s por CUIT; DetalladaLiquidaciones/DetalladaCaratula/
+    # DetalladaLiquidacionesDetalle se repiten por declaración, así que dejamos una pausa.
+    sleep_entre_decl = max(26.0, float(settings.arca_moa_chunk_sleep_seconds))
+
     for idx, decl in enumerate(declaraciones, start=1):
         decl = _normalizar_fila_declaracion(decl)
         id_decl = _id_listado_declaracion(decl)
         if not id_decl:
             continue
         id_dest = id_decl
+
+        if idx > 1:
+            if on_progress:
+                on_progress(
+                    {
+                        "phase": "moa_detalle",
+                        "current": idx,
+                        "total": n_decl_total,
+                        "message": (
+                            f"Pausa {sleep_entre_decl:.0f}s antes de declaración {id_dest} "
+                            f"(AFIP exige >=25s por método/CUIT)…"
+                        ),
+                    }
+                )
+            time.sleep(sleep_entre_decl)
 
         if on_progress and (
             idx == 1
@@ -740,106 +776,126 @@ def fetch_moa_declaracion_liquidaciones(
                 }
             )
 
-        liq_rta, _r6013_l = _retry_moa_call(
-            settings,
-            moa_client,
-            lambda c: c.service.DetalladaLiquidaciones(
-                argWSAutenticacionEmpresa=auth,
-                argIdentificadorDestinacion=id_dest,
-            ),
-        )
-        meta["reintentos_6013_total"] += _r6013_l
-        meta["reintentos_6013_por_operacion"]["DetalladaLiquidaciones"] = (
-            meta["reintentos_6013_por_operacion"].get("DetalladaLiquidaciones", 0)
-            + _r6013_l
-        )
-        meta["operaciones"].append(
-            {"declaracion": id_decl, "DetalladaLiquidaciones": zeep_result_to_json(liq_rta)}
-        )
-        _raise_if_moa_errors(liq_rta, f"DetalladaLiquidaciones({id_dest})")
-
-        caratula_rta, _r6013_c = _retry_moa_call(
-            settings,
-            moa_client,
-            lambda c, dest=id_dest: c.service.DetalladaCaratula(
-                argWSAutenticacionEmpresa=auth,
-                argIdentificadorDestinacion=dest,
-            ),
-        )
-        meta["reintentos_6013_total"] += _r6013_c
-        meta["reintentos_6013_por_operacion"]["DetalladaCaratula"] = (
-            meta["reintentos_6013_por_operacion"].get("DetalladaCaratula", 0) + _r6013_c
-        )
-        meta["operaciones"].append(
-            {"declaracion": id_decl, "DetalladaCaratula": zeep_result_to_json(caratula_rta)}
-        )
-        _raise_if_moa_errors(caratula_rta, f"DetalladaCaratula({id_dest})")
-        caratula_json = zeep_result_to_json(caratula_rta)
-        if caratula_json is None:
-            caratula_json = {}
-
-        liqs = _extract_liquidaciones_summary(liq_rta)
-        fecha_base = _coerce_fecha_declaracion(decl, caratula_json, liqs)
-
-        for liq in liqs:
-            id_liq = (liq.get("IdentificadorLiquidacion") or "").strip()
-            if not id_liq:
-                continue
-
-            det_rta, _r6013_d = _retry_moa_call(
+        # Resiliencia: un D.I. inyectado inválido (p.ej. MOCK o con dígito verificador
+        # incorrecto -> 21248/42075/20752) no debe abortar el batch completo; lo saltamos.
+        try:
+            liq_rta, _r6013_l = _retry_moa_call(
                 settings,
                 moa_client,
-                lambda c, dest=id_dest, liq=id_liq: c.service.DetalladaLiquidacionesDetalle(
+                lambda c: c.service.DetalladaLiquidaciones(
                     argWSAutenticacionEmpresa=auth,
-                    argDetalladaLiquidacionesDetalle={
-                        "IdentificadorDestinacion": dest,
-                        "IdentificadorLiquidacion": liq,
-                    },
+                    argIdentificadorDestinacion=id_dest,
                 ),
             )
-            meta["reintentos_6013_total"] += _r6013_d
-            meta["reintentos_6013_por_operacion"]["DetalladaLiquidacionesDetalle"] = (
-                meta["reintentos_6013_por_operacion"].get(
-                    "DetalladaLiquidacionesDetalle", 0
-                )
-                + _r6013_d
+            meta["reintentos_6013_total"] += _r6013_l
+            meta["reintentos_6013_por_operacion"]["DetalladaLiquidaciones"] = (
+                meta["reintentos_6013_por_operacion"].get("DetalladaLiquidaciones", 0)
+                + _r6013_l
             )
             meta["operaciones"].append(
-                {
-                    "declaracion": id_decl,
-                    "liquidacion": id_liq,
-                    "DetalladaLiquidacionesDetalle": zeep_result_to_json(det_rta),
-                }
+                {"declaracion": id_decl, "DetalladaLiquidaciones": zeep_result_to_json(liq_rta)}
             )
-            _raise_if_moa_errors(det_rta, f"DetalladaLiquidacionesDetalle({id_dest},{id_liq})")
+            _raise_if_moa_errors(liq_rta, f"DetalladaLiquidaciones({id_dest})")
 
-            conceptos = _conceptos_from_detalle(det_rta)
-            # Detalle MOA: FOB/FLETE/SEGURO suelen estar acá, no solo en el listado.
-            det_json = zeep_result_to_json(det_rta)
-            fecha_row = fecha_base
-            if fecha_row is None and isinstance(det_json, dict):
-                fecha_row = _parse_fecha_decl(det_json)
-            liquidaciones_out.append(
-                Liquidacion(
-                    cuit=cuit,
-                    id_externo=f"{id_dest}:{id_liq}",
-                    numero=id_liq,
-                    fecha=fecha_row,
-                    destinacion_id=id_dest,
-                    conceptos=conceptos,
-                    raw={
-                        "identificador_declaracion": id_decl,
-                        "identificador_destinacion": id_dest,
-                        "liquidacion_resumen": liq,
-                        # Fila listado Detallada/SIMI (proveedor exterior, etc.).
-                        "declaracion_listado": decl,
-                        # Carátula declaración (suele incluir montos FOB/CIF vs solo listado).
-                        "moa_detallada_caratula": caratula_json,
-                        # JSON DetalladaLiquidacionesDetalle (conceptos; a veces sin FOB).
-                        "moa_detallada_liquidaciones_detalle": det_json,
-                    },
-                )
+            caratula_rta, _r6013_c = _retry_moa_call(
+                settings,
+                moa_client,
+                lambda c, dest=id_dest: c.service.DetalladaCaratula(
+                    argWSAutenticacionEmpresa=auth,
+                    argIdentificadorDestinacion=dest,
+                ),
             )
+            meta["reintentos_6013_total"] += _r6013_c
+            meta["reintentos_6013_por_operacion"]["DetalladaCaratula"] = (
+                meta["reintentos_6013_por_operacion"].get("DetalladaCaratula", 0) + _r6013_c
+            )
+            meta["operaciones"].append(
+                {"declaracion": id_decl, "DetalladaCaratula": zeep_result_to_json(caratula_rta)}
+            )
+            _raise_if_moa_errors(caratula_rta, f"DetalladaCaratula({id_dest})")
+            caratula_json = zeep_result_to_json(caratula_rta)
+            if caratula_json is None:
+                caratula_json = {}
+
+            liqs = _extract_liquidaciones_summary(liq_rta)
+            fecha_base = _coerce_fecha_declaracion(decl, caratula_json, liqs)
+
+            for liq in liqs:
+                id_liq = (liq.get("IdentificadorLiquidacion") or "").strip()
+                if not id_liq:
+                    continue
+
+                det_rta, _r6013_d = _retry_moa_call(
+                    settings,
+                    moa_client,
+                    lambda c, dest=id_dest, liq=id_liq: c.service.DetalladaLiquidacionesDetalle(
+                        argWSAutenticacionEmpresa=auth,
+                        argDetalladaLiquidacionesDetalle={
+                            "IdentificadorDestinacion": dest,
+                            "IdentificadorLiquidacion": liq,
+                        },
+                    ),
+                )
+                meta["reintentos_6013_total"] += _r6013_d
+                meta["reintentos_6013_por_operacion"]["DetalladaLiquidacionesDetalle"] = (
+                    meta["reintentos_6013_por_operacion"].get(
+                        "DetalladaLiquidacionesDetalle", 0
+                    )
+                    + _r6013_d
+                )
+                meta["operaciones"].append(
+                    {
+                        "declaracion": id_decl,
+                        "liquidacion": id_liq,
+                        "DetalladaLiquidacionesDetalle": zeep_result_to_json(det_rta),
+                    }
+                )
+                _raise_if_moa_errors(
+                    det_rta, f"DetalladaLiquidacionesDetalle({id_dest},{id_liq})"
+                )
+
+                conceptos = _conceptos_from_detalle(det_rta)
+                det_json = zeep_result_to_json(det_rta)
+                fecha_row = fecha_base
+                if fecha_row is None and isinstance(det_json, dict):
+                    fecha_row = _parse_fecha_decl(det_json)
+                liquidaciones_out.append(
+                    Liquidacion(
+                        cuit=cuit,
+                        id_externo=f"{id_dest}:{id_liq}",
+                        numero=id_liq,
+                        fecha=fecha_row,
+                        destinacion_id=id_dest,
+                        conceptos=conceptos,
+                        raw={
+                            "identificador_declaracion": id_decl,
+                            "identificador_destinacion": id_dest,
+                            "liquidacion_resumen": liq,
+                            "declaracion_listado": decl,
+                            "moa_detallada_caratula": caratula_json,
+                            "moa_detallada_liquidaciones_detalle": det_json,
+                        },
+                    )
+                )
+        except RuntimeError as exc:
+            logger.warning(
+                "MOA: salteando D.I. %s por error de AFIP: %s", id_dest, exc
+            )
+            meta.setdefault("declaraciones_con_error", []).append(
+                {"identificador_destinacion": id_dest, "error": str(exc)}
+            )
+            if on_progress:
+                on_progress(
+                    {
+                        "phase": "moa_detalle",
+                        "current": idx,
+                        "total": n_decl_total,
+                        "message": (
+                            f"D.I. {id_dest} descartado ({str(exc)[:120]})"
+                        ),
+                    }
+                )
+            continue
 
     meta["declaraciones_encontradas"] = len(declaraciones)
     meta["liquidaciones_normalizadas"] = len(liquidaciones_out)
@@ -853,6 +909,78 @@ def fetch_moa_declaracion_liquidaciones(
         meta.get("reintentos_6013_por_operacion") or "sin desglose",
     )
     return liquidaciones_out, meta
+
+
+def _fetch_caratula_para_dest(
+    settings: Settings,
+    client: Client,
+    auth: dict[str, Any],
+    dest: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Núcleo de refetch de un D.I.: DetalladaCaratula + DetalladaLiquidaciones + detalle.
+
+    Requiere un `Client` y `auth` ya armados (para no recargar el WSDL por D.I.).
+    """
+    caratula_rta, _ = _retry_moa_call(
+        settings,
+        client,
+        lambda c: c.service.DetalladaCaratula(
+            argWSAutenticacionEmpresa=auth,
+            argIdentificadorDestinacion=dest,
+        ),
+    )
+    _raise_if_moa_errors(caratula_rta, f"DetalladaCaratula({dest})")
+    caratula_json = zeep_result_to_json(caratula_rta) or {}
+
+    # DetalladaLiquidaciones: necesito los IdentificadorLiquidacion para pedir detalle.
+    liq_rta, _ = _retry_moa_call(
+        settings,
+        client,
+        lambda c: c.service.DetalladaLiquidaciones(
+            argWSAutenticacionEmpresa=auth,
+            argIdentificadorDestinacion=dest,
+        ),
+    )
+    _raise_if_moa_errors(liq_rta, f"DetalladaLiquidaciones({dest})")
+    liqs = _extract_liquidaciones_summary(liq_rta)
+
+    detalles: list[dict[str, Any]] = []
+    for liq in liqs:
+        id_liq = (liq.get("IdentificadorLiquidacion") or "").strip()
+        if not id_liq:
+            continue
+        det_rta, _ = _retry_moa_call(
+            settings,
+            client,
+            lambda c, d=dest, lid=id_liq: c.service.DetalladaLiquidacionesDetalle(
+                argWSAutenticacionEmpresa=auth,
+                argDetalladaLiquidacionesDetalle={
+                    "IdentificadorDestinacion": d,
+                    "IdentificadorLiquidacion": lid,
+                },
+            ),
+        )
+        _raise_if_moa_errors(det_rta, f"DetalladaLiquidacionesDetalle({dest},{id_liq})")
+        det_json = zeep_result_to_json(det_rta) or {}
+        detalles.append({"identificador_liquidacion": id_liq, "detalle": det_json})
+
+    return caratula_json, detalles
+
+
+def _make_moa_client(settings: Settings, ta: TicketAcceso) -> Client:
+    transport = Transport(
+        session=requests.Session(),
+        timeout=settings.arca_liquidaciones_timeout,
+    )
+    plugin = TokenSignPlugin(ta.token, ta.sign, settings.arca_soap_auth_ns)
+    return Client(settings.arca_liquidaciones_wsdl, transport=transport, plugins=[plugin])
+
+
+def _validar_config_moa_minima(settings: Settings) -> None:
+    if not settings.arca_liquidaciones_wsdl:
+        raise ValueError("ARCA_LIQUIDACIONES_WSDL requerido para MOA")
+    if not (settings.arca_moa_tipo_agente or "").strip():
+        raise ValueError("Configure ARCA_MOA_TIPO_AGENTE en .env (MOA exige este campo).")
 
 
 def fetch_moa_caratula_unica(
@@ -869,70 +997,98 @@ def fetch_moa_caratula_unica(
     solo en ese tramo). Devuelve `(caratula_json, detalles_json)` con una entrada por
     `IdentificadorLiquidacion` para que el caller haga merge in-place del raw_json.
     """
-    if not settings.arca_liquidaciones_wsdl:
-        raise ValueError("ARCA_LIQUIDACIONES_WSDL requerido para MOA")
-    if not (settings.arca_moa_tipo_agente or "").strip():
-        raise ValueError("Configure ARCA_MOA_TIPO_AGENTE en .env (MOA exige este campo).")
-
+    _validar_config_moa_minima(settings)
     dest = (id_destinacion or "").strip()
     if not dest:
         raise ValueError("id_destinacion vacío")
 
     ta = parse_ticket_xml(ta_xml)
-    transport = Transport(
-        session=requests.Session(),
-        timeout=settings.arca_liquidaciones_timeout,
-    )
-    plugin = TokenSignPlugin(ta.token, ta.sign, settings.arca_soap_auth_ns)
-    moa_client = Client(
-        settings.arca_liquidaciones_wsdl, transport=transport, plugins=[plugin]
-    )
+    client = _make_moa_client(settings, ta)
+    auth = _moa_auth_dict(ta, cuit, settings)
+    return _fetch_caratula_para_dest(settings, client, auth, dest)
+
+
+def fetch_moa_caratulas_batch(
+    settings: Settings,
+    cuit: str,
+    id_destinaciones: list[str],
+    ta_xml: bytes,
+    *,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Refetch en lote: ideal para completar todos los D.I. sin `moa_detallada_caratula`.
+
+    Arma un único WSDL Client + auth, y respeta la pausa AFIP de >=25s entre D.I.
+    (mismo método MOA + mismo CUIT → error 6013 si se invoca antes).
+
+    Devuelve una lista con una entrada por D.I.:
+    ``{"destinacion_id": "...", "ok": bool, "caratula": {...}, "detalles": [...], "error": str | None}``.
+    Nunca levanta por un D.I. que falla: se captura y se reporta, para no abortar la corrida.
+    """
+    _validar_config_moa_minima(settings)
+
+    ids = [d.strip() for d in id_destinaciones if (d or "").strip()]
+    if not ids:
+        return []
+
+    ta = parse_ticket_xml(ta_xml)
+    client = _make_moa_client(settings, ta)
     auth = _moa_auth_dict(ta, cuit, settings)
 
-    caratula_rta, _ = _retry_moa_call(
-        settings,
-        moa_client,
-        lambda c: c.service.DetalladaCaratula(
-            argWSAutenticacionEmpresa=auth,
-            argIdentificadorDestinacion=dest,
-        ),
-    )
-    _raise_if_moa_errors(caratula_rta, f"DetalladaCaratula({dest})")
-    caratula_json = zeep_result_to_json(caratula_rta) or {}
+    # AFIP ratelimit por método/CUIT: los 3 métodos (DetalladaCaratula, DetalladaLiquidaciones,
+    # DetalladaLiquidacionesDetalle) se repiten por D.I., así que dejamos la pausa estándar.
+    sleep_entre_dest = max(26.0, float(settings.arca_moa_chunk_sleep_seconds))
 
-    # DetalladaLiquidaciones: necesito los IdentificadorLiquidacion para pedir detalle.
-    liq_rta, _ = _retry_moa_call(
-        settings,
-        moa_client,
-        lambda c: c.service.DetalladaLiquidaciones(
-            argWSAutenticacionEmpresa=auth,
-            argIdentificadorDestinacion=dest,
-        ),
-    )
-    _raise_if_moa_errors(liq_rta, f"DetalladaLiquidaciones({dest})")
-    liqs = _extract_liquidaciones_summary(liq_rta)
-
-    detalles: list[dict[str, Any]] = []
-    for liq in liqs:
-        id_liq = (liq.get("IdentificadorLiquidacion") or "").strip()
-        if not id_liq:
-            continue
-        det_rta, _ = _retry_moa_call(
-            settings,
-            moa_client,
-            lambda c, d=dest, lid=id_liq: c.service.DetalladaLiquidacionesDetalle(
-                argWSAutenticacionEmpresa=auth,
-                argDetalladaLiquidacionesDetalle={
-                    "IdentificadorDestinacion": d,
-                    "IdentificadorLiquidacion": lid,
-                },
-            ),
-        )
-        _raise_if_moa_errors(det_rta, f"DetalladaLiquidacionesDetalle({dest},{id_liq})")
-        det_json = zeep_result_to_json(det_rta) or {}
-        detalles.append({"identificador_liquidacion": id_liq, "detalle": det_json})
-
-    return caratula_json, detalles
+    resultados: list[dict[str, Any]] = []
+    total = len(ids)
+    for idx, dest in enumerate(ids, start=1):
+        if idx > 1:
+            if on_progress:
+                on_progress(
+                    {
+                        "phase": "moa_refetch_caratula",
+                        "current": idx,
+                        "total": total,
+                        "message": (
+                            f"Pausa {sleep_entre_dest:.0f}s antes de {dest} "
+                            f"(AFIP exige >=25s por método/CUIT)…"
+                        ),
+                    }
+                )
+            time.sleep(sleep_entre_dest)
+        if on_progress:
+            on_progress(
+                {
+                    "phase": "moa_refetch_caratula",
+                    "current": idx,
+                    "total": total,
+                    "message": f"Refetch carátula {dest} ({idx}/{total})",
+                }
+            )
+        try:
+            caratula, detalles = _fetch_caratula_para_dest(settings, client, auth, dest)
+            resultados.append(
+                {
+                    "destinacion_id": dest,
+                    "ok": True,
+                    "caratula": caratula,
+                    "detalles": detalles,
+                    "error": None,
+                }
+            )
+        except (RuntimeError, ValueError) as exc:
+            logger.warning("Refetch carátula falló para %s: %s", dest, exc)
+            resultados.append(
+                {
+                    "destinacion_id": dest,
+                    "ok": False,
+                    "caratula": None,
+                    "detalles": [],
+                    "error": str(exc),
+                }
+            )
+    return resultados
 
 
 def _extract_declaraciones(lista_rta: Any) -> list[dict[str, Any]]:

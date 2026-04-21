@@ -95,12 +95,20 @@ class Settings(BaseSettings):
     )
     arca_moa_rol: str = Field(default="", description="Opcional; según operación en ARCA")
     arca_moa_chunk_sleep_seconds: float = Field(
-        default=15.0,
-        description="Pausa entre tramos de 30d en DetalladaListaDeclaraciones (evita AFIP 6013)",
+        default=26.0,
+        description=(
+            "Pausa (segundos) entre llamadas al mismo método MOA con el mismo CUIT. AFIP "
+            "exige >=25s (error 6013); 26s deja 1s de margen. Se aplica entre tramos de 30 "
+            "días, entre variantes del listado y entre declaraciones. Env: ARCA_MOA_CHUNK_SLEEP_SECONDS"
+        ),
     )
     arca_moa_retry_6013_sleep_seconds: float = Field(
-        default=15.0,
-        description="Pausa antes de reintentar la misma llamada si AFIP devuelve 6013 (no es el intervalo entre tramos de 30 días)",
+        default=26.0,
+        description=(
+            "Pausa base antes de reintentar la misma llamada si AFIP devuelve 6013. AFIP "
+            "exige >=25s por método/CUIT; 26s deja 1s de margen. Se combina con el backoff "
+            "exponencial si ARCA_MOA_RETRY_6013_BACKOFF=exponential."
+        ),
     )
     arca_moa_retry_6013_backoff: str = Field(
         default="exponential",
