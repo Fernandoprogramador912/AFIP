@@ -146,6 +146,11 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
             lines.append(f"  TA generationTime: {ta.generation_time or '—'}")
             lines.append(f"  TA expirationTime: {ta.expiration_time or '—'}")
             lines.append(f"  TA vencido (según expirationTime): {wsaa_ticket_expired(raw_ta)}")
+            if ta.service:
+                match = "OK" if ta.service.strip() == s.arca_wsaa_service.strip() else "MISMATCH"
+                lines.append(f"  TA service: {ta.service}  (vs ARCA_WSAA_SERVICE={s.arca_wsaa_service}) -> {match}")
+            else:
+                lines.append("  TA service: — (no informado en el XML)")
         except (OSError, ValueError) as exc:
             lines.append(f"  (TA no parseable: {exc})")
     cert = s.arca_cert_path
@@ -179,7 +184,13 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_auth(_args: argparse.Namespace) -> int:
+def cmd_auth(args: argparse.Namespace) -> int:
+    """
+    Obtiene/reutiliza ticket WSAA.
+
+    Por default usa `ensure_ticket`: reaprovecha el TA existente si su `expirationTime`
+    aún no venció (AFIP emite el TA por ~12 h). Con `--force` siempre llama a WSAA.
+    """
     s = get_settings()
     if s.arca_mode.lower() == "mock":
         logger.warning(
@@ -187,10 +198,19 @@ def cmd_auth(_args: argparse.Namespace) -> int:
         )
         return 0
     wsaa = WSAAClient(s)
-    ta = wsaa.login_cms()
-    s.arca_ticket_path.parent.mkdir(parents=True, exist_ok=True)
-    s.arca_ticket_path.write_bytes(ta)
-    logger.info("Ticket guardado en %s", s.arca_ticket_path)
+    if getattr(args, "force", False):
+        ta = wsaa.login_cms()
+        s.arca_ticket_path.parent.mkdir(parents=True, exist_ok=True)
+        s.arca_ticket_path.write_bytes(ta)
+        logger.info("Ticket renovado (--force) y guardado en %s", s.arca_ticket_path)
+        return 0
+    existed = s.arca_ticket_path.is_file()
+    ta = wsaa.ensure_ticket(s.arca_ticket_path)
+    reutilizado = existed and not wsaa_ticket_expired(ta)
+    if reutilizado:
+        logger.info("Ticket vigente reutilizado: %s (use --force para renovar)", s.arca_ticket_path)
+    else:
+        logger.info("Ticket guardado en %s", s.arca_ticket_path)
     return 0
 
 
@@ -488,67 +508,21 @@ def cmd_report_ic_tasa(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_refetch_caratula(args: argparse.Namespace) -> int:
-    """Refetch acotado: solo `DetalladaCaratula` + `DetalladaLiquidacionesDetalle` de un D.I.
+def _merge_caratula_in_sqlite(
+    sqlite_path: Path, dest: str, caratula: dict, detalles: list[dict]
+) -> int:
+    """Merge in-place: actualiza SOLO los bloques MOA detallados, sin tocar el resto.
 
-    Actualiza in-place el `raw_json` de la fila más reciente del despacho en SQLite.
-    Útil cuando AFIP devolvió 6013 justo en `DetalladaCaratula` y la fila quedó sin montos
-    FOB/FLETE/SEGURO, pero el resto del fetch terminó OK.
+    Devuelve la cantidad de filas actualizadas para ese `destinacion_id`.
     """
-    from tasa_estadistica.arca.moa_declaracion import fetch_moa_caratula_unica
-
-    s = get_settings()
-    if s.arca_mode.lower() != "live":
-        logger.error("ARCA_MODE=live requerido (actual: %s)", s.arca_mode)
-        return 2
-    ta_path = s.arca_ticket_path
-    if not ta_path.is_file():
-        logger.error("Ticket WSAA no encontrado en %s. Ejecute `tasa-arca auth`.", ta_path)
-        return 2
-    try:
-        ta_xml = ta_path.read_bytes()
-    except OSError as e:
-        logger.error("No pude leer %s: %s", ta_path, e)
-        return 2
-    if wsaa_ticket_expired(ta_xml):
-        logger.error("Ticket WSAA expirado; ejecute `tasa-arca auth`.")
-        return 2
-
-    dest = (args.destinacion or "").strip()
-    if not dest:
-        logger.error("Indique --destinacion <D.I.>")
-        return 2
-
-    cuit = (args.cuit or s.arca_cuit or "").strip()
-    if not cuit:
-        logger.error("Indique --cuit o configure ARCA_CUIT")
-        return 2
-
-    with sqlite3.connect(str(s.arca_sqlite_path)) as c:
+    with sqlite3.connect(str(sqlite_path)) as c:
         c.row_factory = sqlite3.Row
         rows = c.execute(
-            """
-            SELECT id, raw_json
-            FROM liquidaciones
-            WHERE destinacion_id = ?
-            ORDER BY id DESC
-            """,
+            "SELECT id, raw_json FROM liquidaciones WHERE destinacion_id = ? ORDER BY id DESC",
             (dest,),
         ).fetchall()
         if not rows:
-            logger.error("Sin filas en SQLite para destinacion_id=%s", dest)
-            return 2
-
-    logger.info("Refetch carátula MOA para %s…", dest)
-    try:
-        caratula, detalles = fetch_moa_caratula_unica(s, cuit, dest, ta_xml)
-    except (RuntimeError, ValueError) as e:
-        logger.error("Falló refetch: %s", e)
-        return 2
-
-    # Merge in-place: actualizamos SOLO los bloques MOA detallados, sin tocar el resto.
-    with sqlite3.connect(str(s.arca_sqlite_path)) as c:
-        c.row_factory = sqlite3.Row
+            return 0
         for r in rows:
             raw_s = r["raw_json"] or "{}"
             try:
@@ -582,14 +556,109 @@ def cmd_refetch_caratula(args: argparse.Namespace) -> int:
                 (json.dumps(payload, ensure_ascii=False), r["id"]),
             )
         c.commit()
-    logger.info(
-        "OK: %s fila(s) actualizadas para %s (carátula: %s, detalles: %s)",
-        len(rows),
-        dest,
-        "SI" if caratula else "NO",
-        len(detalles),
+        return len(rows)
+
+
+def cmd_refetch_caratula(args: argparse.Namespace) -> int:
+    """Refetch acotado: solo `DetalladaCaratula` + `DetalladaLiquidacionesDetalle`.
+
+    Actualiza in-place el `raw_json` de la fila más reciente del despacho en SQLite.
+    Soporta tres modos (mutuamente excluyentes):
+      - ``--destinacion ID`` → un solo D.I.
+      - ``--ids A,B,C``      → lista de D.I.
+      - ``--all``            → todos los D.I. en SQLite sin `moa_detallada_caratula`.
+
+    En los dos últimos modos se reutiliza el mismo cliente SOAP y se respeta la pausa
+    AFIP de >=25s entre D.I. (mismo método MOA + mismo CUIT → error 6013 si no se espera).
+    """
+    from tasa_estadistica.arca.moa_declaracion import (
+        destinacion_ids_sin_caratula_en_sqlite,
+        fetch_moa_caratulas_batch,
     )
-    return 0
+
+    s = get_settings()
+    if s.arca_mode.lower() != "live":
+        logger.error("ARCA_MODE=live requerido (actual: %s)", s.arca_mode)
+        return 2
+    if not s.arca_cert_path or not s.arca_cert_path.is_file():
+        logger.error(
+            "ARCA_CERT_PATH inválido o ausente: %s (requerido para WSAA en live).",
+            s.arca_cert_path,
+        )
+        return 2
+    try:
+        ta_xml = WSAAClient(s).ensure_ticket(s.arca_ticket_path)
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.error("No pude obtener/reutilizar el TA WSAA: %s", e)
+        return 2
+
+    cuit = (args.cuit or s.arca_cuit or "").strip()
+    if not cuit:
+        logger.error("Indique --cuit o configure ARCA_CUIT")
+        return 2
+
+    if getattr(args, "all", False):
+        ids = destinacion_ids_sin_caratula_en_sqlite(s.arca_sqlite_path)
+        if not ids:
+            logger.info("No hay D.I. sin `moa_detallada_caratula` en SQLite. Nada que refetchear.")
+            return 0
+        logger.info("Refetch --all: %s D.I. sin carátula en SQLite", len(ids))
+    elif (getattr(args, "ids", "") or "").strip():
+        ids = [x.strip() for x in args.ids.split(",") if x.strip()]
+        if not ids:
+            logger.error("El parámetro --ids no contiene destinaciones válidas")
+            return 2
+    else:
+        dest = (args.destinacion or "").strip()
+        if not dest:
+            logger.error("Indique --destinacion <D.I.>, --ids o --all")
+            return 2
+        ids = [dest]
+
+    pausa_s = max(26.0, float(s.arca_moa_chunk_sleep_seconds))
+    if len(ids) > 1:
+        logger.info(
+            "Refetch carátula MOA para %s D.I. (pausa de %.0fs entre cada uno por regla AFIP)…",
+            len(ids),
+            pausa_s,
+        )
+    else:
+        logger.info("Refetch carátula MOA para %s…", ids[0])
+
+    try:
+        resultados = fetch_moa_caratulas_batch(s, cuit, ids, ta_xml)
+    except (RuntimeError, ValueError) as e:
+        logger.error("Falló refetch batch: %s", e)
+        return 2
+
+    ok_count = 0
+    err_count = 0
+    for res in resultados:
+        dest_id = res["destinacion_id"]
+        if not res["ok"]:
+            err_count += 1
+            logger.error("D.I. %s: %s", dest_id, res["error"])
+            continue
+        n_filas = _merge_caratula_in_sqlite(
+            s.arca_sqlite_path, dest_id, res["caratula"] or {}, res["detalles"] or []
+        )
+        if n_filas == 0:
+            logger.warning(
+                "D.I. %s: AFIP respondió OK pero no hay filas en SQLite para merge (¿fetch previo?)",
+                dest_id,
+            )
+            continue
+        ok_count += 1
+        logger.info(
+            "OK D.I. %s: %s fila(s) actualizadas (carátula: %s, detalles: %s)",
+            dest_id,
+            n_filas,
+            "SI" if res["caratula"] else "NO",
+            len(res["detalles"] or []),
+        )
+
+    logger.info("Refetch batch terminado: OK=%s, error=%s (total=%s)", ok_count, err_count, len(ids))
+    return 0 if err_count == 0 else 1
 
 
 def cmd_rebuild(args: argparse.Namespace) -> int:
@@ -620,8 +689,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-v", "--verbose", action="store_true", help="Log debug")
     sub = p.add_subparsers(dest="command", required=True)
 
-    sub.add_parser(
-        "auth", help="Obtiene y guarda ticket WSAA (requiere ARCA_MODE=live y certificado)"
+    pauth = sub.add_parser(
+        "auth",
+        help=(
+            "Obtiene/reutiliza ticket WSAA. Por default reaprovecha el TA vigente; "
+            "--force renueva siempre (requiere ARCA_MODE=live y certificado)."
+        ),
+    )
+    pauth.add_argument(
+        "--force",
+        action="store_true",
+        help="Fuerza renovación aunque el TA en disco siga vigente.",
     )
 
     sub.add_parser(
@@ -702,12 +780,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     prfc = sub.add_parser(
         "refetch-caratula",
-        help="Refetch acotado (solo carátula + detalle) de un D.I. para completar FOB/Flete/Seguro",
+        help="Refetch acotado (solo carátula + detalle) de uno/varios D.I. para completar FOB/Flete/Seguro",
     )
-    prfc.add_argument(
+    grp = prfc.add_mutually_exclusive_group(required=True)
+    grp.add_argument(
         "--destinacion",
-        required=True,
+        default="",
         help="Identificador de destinación (D.I.) a refrescar",
+    )
+    grp.add_argument(
+        "--ids",
+        default="",
+        help="Varios D.I. separados por coma (batch con pausa >=25s entre cada uno)",
+    )
+    grp.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "Refetch de TODOS los D.I. en SQLite que no tengan `moa_detallada_caratula` "
+            "(batch con pausa >=25s entre cada uno)"
+        ),
     )
     prfc.add_argument("--cuit", default="", help="CUIT (default: ARCA_CUIT)")
 
