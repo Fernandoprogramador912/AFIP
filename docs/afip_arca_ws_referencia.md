@@ -47,6 +47,11 @@ En este proyecto: `WSAA` + certificado `.p12`; el servicio de negocio en el TRA 
 - Producción / negocio web services: `sri@arca.gob.ar`
 - Testing — solo WSAA/WSASS: `webservices-desa@arca.gob.ar`
 
+## Referencias externas (comunidad)
+
+- **`reingart/pyafipws`** — Librería Python histórica para AFIP (LGPL-3.0). Cubre **facturación electrónica** (WSFE/WSFEX/WSMTXCA/WSCT) y **trazabilidad** (TrazaMed/Fito/Renpre). **No incluye MOA `wconsdeclaracion` ni liquidaciones de importación**, por lo que no reemplaza nuestro pipeline. Útil como **referencia** para validar el cliente WSAA. Link: <https://github.com/reingart/pyafipws>. Comparativa detallada: [`comparativa_wsaa_pyafipws.md`](comparativa_wsaa_pyafipws.md). Archivos fuente mirror (solo lectura): [`referencias/pyafipws/wsaa.py`](referencias/pyafipws/wsaa.py), [`referencias/pyafipws/utils.py`](referencias/pyafipws/utils.py).
+- **AFIP SDK (Discord / foro)** — Comunidad orientada al SaaS `afipsdk.com` y a facturación electrónica. Muy pocos hilos tocan COMEX / MOA; no aporta material específico para tasa de estadística. Link: <https://community.afipsdk.com/channels/foro/>. Para importaciones y manifiestos la referencia sigue siendo el catálogo oficial ARCA.
+
 ## Relación con este repo
 
 - **`ARCA_LIQUIDACIONES_WSDL`**: si apunta a MOA (`wconsdeclaracion`), el flujo usa listados + detalle MOA.
