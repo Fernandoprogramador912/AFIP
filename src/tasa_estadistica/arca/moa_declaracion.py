@@ -14,8 +14,10 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import requests
+from lxml import etree
 from zeep import Client
 from zeep.helpers import serialize_object
+from zeep.plugins import HistoryPlugin
 from zeep.transports import Transport
 
 from tasa_estadistica.arca.auth_ticket_store import TicketAcceso, parse_ticket_xml
@@ -179,6 +181,49 @@ def _retry_moa_call(
 def _limpiar_params(p: dict[str, Any]) -> dict[str, Any]:
     """No enviar claves vacías al SOAP (algunos servicios las interpretan mal)."""
     return {k: v for k, v in p.items() if v is not None and v != ""}
+
+
+_SOAP_MAX_PER_ENTRY_BYTES = 300_000  # ~300 KB por envelope, suficiente para un listado CANC
+
+
+def _capture_soap(
+    history: HistoryPlugin,
+    operation: str,
+    variante: str,
+    meta: dict[str, Any],
+) -> None:
+    """Vuelca los últimos envelopes SOAP enviados/recibidos en ``meta['raw_soap_listados']``.
+
+    Solo se invoca si ``arca_moa_log_raw_soap`` está activo. Captura ambos envelopes para
+    poder reproducir el caso sin re-llamar a AFIP. Cada entrada se trunca a
+    ``_SOAP_MAX_PER_ENTRY_BYTES`` para que no explote el JSON del meta.
+    """
+    try:
+        sent = history.last_sent
+        received = history.last_received
+    except (IndexError, AttributeError):
+        return
+    if sent is None or received is None:
+        return
+    try:
+        sent_xml = etree.tostring(
+            sent["envelope"], pretty_print=True, encoding="unicode"
+        )
+        recv_xml = etree.tostring(
+            received["envelope"], pretty_print=True, encoding="unicode"
+        )
+    except (TypeError, ValueError, etree.LxmlError):
+        return
+    raw = meta.setdefault("raw_soap_listados", [])
+    raw.append(
+        {
+            "operacion": operation,
+            "variante": variante,
+            "sent_xml": sent_xml[:_SOAP_MAX_PER_ENTRY_BYTES],
+            "received_xml": recv_xml[:_SOAP_MAX_PER_ENTRY_BYTES],
+            "received_truncado": len(recv_xml) > _SOAP_MAX_PER_ENTRY_BYTES,
+        }
+    )
 
 
 def _variantes_auto_simi(
@@ -420,6 +465,212 @@ def merge_declaraciones_huerfanas_sin_caratula(
     return added
 
 
+def _extract_cancelaciones_detalladas(rta: Any) -> list[dict[str, Any]]:
+    """
+    Aplana la respuesta de ConsultarCancelacionDetallada.
+
+    El WSDL envuelve el resultado en ``ConsultarCancelacionDetalladaResult.Resultado`` →
+    ``ArrayOfCancelacionDetallada``. Cada ``CancelacionDetallada`` trae:
+
+    - ``DestinacionCancelada``: el IdentificadorDestinacion cancelado.
+    - ``FechaOficializacion``: la fecha que DetalladaListaDeclaraciones NO nos devuelve
+      para CANC (clave para poblar ``fecha`` en SQLite).
+    - ``FechaCancelacion``: momento en que se dio la cancelación.
+    - ``Estado`` / ``ModalidadCancelacion``: contexto para el panel.
+
+    Devuelve ``[]`` si la respuesta vino sin cancelaciones o con estructura inesperada.
+    """
+    result = getattr(rta, "ConsultarCancelacionDetalladaResult", None)
+    if result is None and isinstance(rta, dict):
+        result = rta.get("ConsultarCancelacionDetalladaResult")
+    if result is None:
+        result = rta
+    resultado = getattr(result, "Resultado", None) if result is not None else None
+    if resultado is None and isinstance(result, dict):
+        resultado = result.get("Resultado")
+    if resultado is None:
+        return []
+    inner = getattr(resultado, "CancelacionDetallada", None)
+    if inner is None and isinstance(resultado, dict):
+        inner = resultado.get("CancelacionDetallada")
+    if inner is None:
+        return []
+    if not isinstance(inner, list):
+        inner = [inner]
+    out: list[dict[str, Any]] = []
+    for c in inner:
+        if c is None:
+            continue
+        out.append(_obj_to_dict(c))
+    return out
+
+
+def _consultar_cancelacion_detallada(
+    settings: Settings,
+    client: Client,
+    auth: dict[str, Any],
+    cuit: str,
+    *,
+    id_declaracion: str | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Core SOAP: reusa ``client`` y ``auth`` ya armados. Devuelve (cancelaciones, r6013)."""
+    input_params: dict[str, Any] = {"CuitImportadorExportador": cuit}
+    if id_declaracion and id_declaracion.strip():
+        input_params["IdentificadorDeclaracion"] = id_declaracion.strip()
+    input_params = _limpiar_params(input_params)
+
+    rta, r6013 = _retry_moa_call(
+        settings,
+        client,
+        lambda c: c.service.ConsultarCancelacionDetallada(
+            argWSAutenticacionEmpresa=auth,
+            inputCancelacionDetallada=input_params,
+        ),
+    )
+    _raise_if_moa_errors(rta, "ConsultarCancelacionDetallada")
+    return _extract_cancelaciones_detalladas(rta), r6013
+
+
+def fetch_moa_cancelaciones_detalladas(
+    settings: Settings,
+    cuit: str,
+    ta_xml: bytes,
+    *,
+    id_declaracion: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Consulta ConsultarCancelacionDetallada para un CUIT (y opcionalmente un D.I.).
+
+    Este método devuelve cancelaciones con su ``FechaOficializacion`` y ``FechaCancelacion``,
+    info que ``DetalladaListaDeclaraciones`` **no** entrega para estado CANC (AFIP responde
+    la lista pero omite las fechas). Se usa para:
+
+    - Completar fecha en D.I. inyectados vía env (que entran al pipeline con fecha=None).
+    - Descubrir D.I. cancelados que no aparecen en ningún listado (caso típico: D.I.
+      retenidas y anuladas post-oficialización).
+
+    Devuelve una lista de diccionarios (ya normalizados). Nunca lanza por lista vacía; sí
+    propaga ``RuntimeError`` si AFIP devuelve errores de SOAP (p. ej. 7008 TA inválido).
+    """
+    _validar_config_moa_minima(settings)
+    ta = parse_ticket_xml(ta_xml)
+    client = _make_moa_client(settings, ta)
+    auth = _moa_auth_dict(ta, cuit, settings)
+    cancelaciones, r6013 = _consultar_cancelacion_detallada(
+        settings, client, auth, cuit, id_declaracion=id_declaracion
+    )
+    if r6013 > 0:
+        logger.info(
+            "ConsultarCancelacionDetallada: %s cancelaciones (reintentos 6013=%s)",
+            len(cancelaciones),
+            r6013,
+        )
+    return cancelaciones
+
+
+def _indexar_cancelaciones_por_dest(
+    cancelaciones: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """
+    Mapa {IdentificadorDestinacion: cancelacion}.
+
+    Si un mismo D.I. aparece varias veces (ítems cancelados distintos), nos quedamos con
+    el primero: sus fechas son globales al D.I., no dependen del ítem.
+    """
+    index: dict[str, dict[str, Any]] = {}
+    for c in cancelaciones:
+        dest = str(c.get("DestinacionCancelada") or "").strip()
+        if not dest or dest in index:
+            continue
+        index[dest] = c
+    return index
+
+
+def _fecha_en_rango(
+    fecha: date | None,
+    desde: date,
+    hasta: date,
+) -> bool:
+    if fecha is None:
+        return False
+    return desde <= fecha <= hasta
+
+
+def _inyectar_fecha_desde_cancelacion(
+    fila: dict[str, Any],
+    cancelacion: dict[str, Any],
+) -> None:
+    """Copia FechaOficializacion/FechaCancelacion de la cancelación AFIP a una fila de listado."""
+    for origen, destino in (
+        ("FechaOficializacion", "FechaOficializacionDeclaracion"),
+        ("FechaOficializacion", "FechaOficializacion"),
+        ("FechaCancelacion", "FechaCancelacion"),
+        ("Estado", "_estado_cancelacion"),
+        ("ModalidadCancelacion", "_modalidad_cancelacion"),
+    ):
+        val = cancelacion.get(origen)
+        if val is None:
+            continue
+        if fila.get(destino) in (None, ""):
+            fila[destino] = val
+
+
+def merge_declaraciones_desde_cancelaciones(
+    dest: dict[str, dict[str, Any]],
+    cancelaciones_por_dest: dict[str, dict[str, Any]],
+    *,
+    fecha_desde: date,
+    fecha_hasta: date,
+    incluir_fuera_de_rango: bool = False,
+) -> tuple[list[str], int]:
+    """
+    Usa el índice de cancelaciones para:
+
+    1. Completar FechaOficializacion en filas ya presentes (inyectadas por env / listado).
+    2. Inyectar D.I. cancelados **no listados** cuya fecha caiga en el rango del fetch
+       (o todos, si ``incluir_fuera_de_rango``). Así aparecen en el pipeline detalle.
+
+    Devuelve (ids_inyectados, filas_con_fecha_completada).
+    """
+    added: list[str] = []
+    completadas = 0
+    ya_presentes_ids = set(dest.keys())
+
+    for did, fila in list(dest.items()):
+        cancelacion = cancelaciones_por_dest.get(did)
+        if not cancelacion:
+            continue
+        antes = _parse_fecha_decl(fila)
+        _inyectar_fecha_desde_cancelacion(fila, cancelacion)
+        despues = _parse_fecha_decl(fila)
+        if antes is None and despues is not None:
+            completadas += 1
+
+    for did, cancelacion in cancelaciones_por_dest.items():
+        if did in ya_presentes_ids:
+            continue
+        fecha_ofic = _parse_fecha_val(cancelacion.get("FechaOficializacion"))
+        if not incluir_fuera_de_rango and not _fecha_en_rango(
+            fecha_ofic, fecha_desde, fecha_hasta
+        ):
+            continue
+        fila: dict[str, Any] = {
+            "IdentificadorDestinacion": did,
+            "IdentificadorDeclaracion": did,
+            "_fuente_inyeccion": "ConsultarCancelacionDetallada",
+        }
+        _inyectar_fecha_desde_cancelacion(fila, cancelacion)
+        dest[did] = fila
+        added.append(did)
+        logger.info(
+            "MOA: inyectado D.I. cancelado descubierto por AFIP: %s (FechaOficializacion=%s)",
+            did,
+            fecha_ofic.isoformat() if fecha_ofic else "—",
+        )
+
+    return added, completadas
+
+
 def merge_declaraciones_extra_desde_settings(
     dest: dict[str, dict[str, Any]],
     settings: Settings,
@@ -456,6 +707,8 @@ def _ejecutar_variantes_simi(
     *,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
     progress_scope: str = "",
+    history: HistoryPlugin | None = None,
+    meta_raw: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Devuelve (resumen por variante, filas únicas por IdentificadorDeclaracion)."""
     merged: dict[str, dict[str, Any]] = {}
@@ -506,6 +759,8 @@ def _ejecutar_variantes_simi(
                 ),
             )
             _raise_if_moa_errors(rta, f"SimiDjaiListaDeclaraciones.{label}")
+            if history is not None and meta_raw is not None:
+                _capture_soap(history, "SimiDjaiListaDeclaraciones", label, meta_raw)
             ok_any = True
             rows = _extract_simi_declaraciones(rta)
             _merge_declaraciones_por_id(merged, rows)
@@ -537,6 +792,8 @@ def _ejecutar_variantes_detallada(
     *,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
     progress_scope: str = "",
+    history: HistoryPlugin | None = None,
+    meta_raw: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     merged: dict[str, dict[str, Any]] = {}
     resumen: list[dict[str, Any]] = []
@@ -586,6 +843,8 @@ def _ejecutar_variantes_detallada(
                 ),
             )
             _raise_if_moa_errors(rta, f"DetalladaListaDeclaraciones.{label}")
+            if history is not None and meta_raw is not None:
+                _capture_soap(history, "DetalladaListaDeclaraciones", label, meta_raw)
             ok_any = True
             rows = _extract_declaraciones(rta)
             _merge_declaraciones_por_id(merged, rows)
@@ -632,14 +891,18 @@ def fetch_moa_declaracion_liquidaciones(
         )
 
     ta = parse_ticket_xml(ta_xml)
+    log_raw_soap = bool(settings.arca_moa_log_raw_soap)
+    history_plugin = HistoryPlugin() if log_raw_soap else None
 
     def _make_moa_client() -> Client:
         transport = Transport(
             session=requests.Session(),
             timeout=settings.arca_liquidaciones_timeout,
         )
-        plugin = TokenSignPlugin(ta.token, ta.sign, settings.arca_soap_auth_ns)
-        return Client(settings.arca_liquidaciones_wsdl, transport=transport, plugins=[plugin])
+        plugins: list[Any] = [TokenSignPlugin(ta.token, ta.sign, settings.arca_soap_auth_ns)]
+        if history_plugin is not None:
+            plugins.append(history_plugin)
+        return Client(settings.arca_liquidaciones_wsdl, transport=transport, plugins=plugins)
 
     auth = _moa_auth_dict(ta, cuit, settings)
     # Un solo Client para listados + detalle: evita recargar el WSDL en cada llamada (muy lento).
@@ -695,6 +958,8 @@ def fetch_moa_declaracion_liquidaciones(
                 vs_det,
                 on_progress=on_progress,
                 progress_scope=chunk_scope,
+                history=history_plugin,
+                meta_raw=meta,
             )
             chunk_meta["detallada"] = {"variantes": res_det}
             _acumular_6013(meta, res_det, "DetalladaListaDeclaraciones")
@@ -710,6 +975,8 @@ def fetch_moa_declaracion_liquidaciones(
                 vs_simi,
                 on_progress=on_progress,
                 progress_scope=chunk_scope,
+                history=history_plugin,
+                meta_raw=meta,
             )
             chunk_meta["simi_djai"] = {"variantes": res_simi}
             _acumular_6013(meta, res_simi, "SimiDjaiListaDeclaraciones")
@@ -720,6 +987,70 @@ def fetch_moa_declaracion_liquidaciones(
     meta["destinacion_ids_extra_inyectados"] = extra_ids
     huerfanos_ids = merge_declaraciones_huerfanas_sin_caratula(declaraciones_por_id, settings)
     meta["destinacion_ids_huerfanos_reinjectados"] = huerfanos_ids
+
+    # Fase 1: descubrir cancelaciones y completar FechaOficializacion.
+    # DetalladaListaDeclaraciones NO devuelve las fechas en estado CANC, así que usamos
+    # ConsultarCancelacionDetallada (que sí expone FechaOficializacion + FechaCancelacion).
+    if bool(settings.arca_moa_descubrir_canceladas):
+        if on_progress:
+            on_progress(
+                {
+                    "phase": "moa_cancelaciones",
+                    "current": 0,
+                    "total": 1,
+                    "message": (
+                        "Consultando cancelaciones detalladas (AFIP) para completar fechas y "
+                        "descubrir D.I. en estado CANC…"
+                    ),
+                }
+            )
+        # ConsultarCancelacionDetallada también está sujeto al rate-limit 25s por método/CUIT;
+        # respetamos la pausa usada entre variantes antes de pegarle.
+        time.sleep(max(1.0, float(settings.arca_moa_chunk_sleep_seconds)))
+        try:
+            cancelaciones, r6013_canc = _consultar_cancelacion_detallada(
+                settings, moa_client, auth, cuit
+            )
+            if r6013_canc:
+                meta["reintentos_6013_total"] += r6013_canc
+                meta["reintentos_6013_por_operacion"][
+                    "ConsultarCancelacionDetallada"
+                ] = (
+                    meta["reintentos_6013_por_operacion"].get(
+                        "ConsultarCancelacionDetallada", 0
+                    )
+                    + r6013_canc
+                )
+            index_canc = _indexar_cancelaciones_por_dest(cancelaciones)
+            meta["cancelaciones_detalladas"] = {
+                "n_total": len(cancelaciones),
+                "n_destinaciones_unicas": len(index_canc),
+            }
+            cancel_ids, n_fechas_completadas = merge_declaraciones_desde_cancelaciones(
+                declaraciones_por_id,
+                index_canc,
+                fecha_desde=fecha_desde,
+                fecha_hasta=fecha_hasta,
+                incluir_fuera_de_rango=bool(
+                    settings.arca_moa_cancelaciones_incluir_fuera_de_rango
+                ),
+            )
+            meta["cancelaciones_detalladas"]["destinacion_ids_inyectados"] = cancel_ids
+            meta["cancelaciones_detalladas"]["fechas_completadas"] = n_fechas_completadas
+            logger.info(
+                "Cancelaciones detalladas: %s total, %s D.I. únicas, %s D.I. inyectados nuevos, "
+                "%s fechas completadas",
+                len(cancelaciones),
+                len(index_canc),
+                len(cancel_ids),
+                n_fechas_completadas,
+            )
+        except RuntimeError as exc:
+            # No abortamos el fetch: la cancelaciones son un complemento, no el core.
+            logger.warning(
+                "ConsultarCancelacionDetallada falló (sigo sin info de CANC): %s", exc
+            )
+            meta["cancelaciones_detalladas"] = {"error": str(exc)}
 
     declaraciones = list(declaraciones_por_id.values())
     meta["lista_declaraciones_agrupadas"] = len(declaraciones)

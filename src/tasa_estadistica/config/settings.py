@@ -143,6 +143,32 @@ class Settings(BaseSettings):
             "montos faltantes sin intervención manual. Env: ARCA_MOA_AUTOINJECT_SIN_CARATULA"
         ),
     )
+    arca_moa_descubrir_canceladas: bool = Field(
+        default=True,
+        description=(
+            "En cada fetch, llama a ConsultarCancelacionDetallada por CUIT para descubrir "
+            "D.I. cancelados (estado CANC) que DetalladaListaDeclaraciones NO devuelve, y para "
+            "completar FechaOficializacion en D.I. inyectados. Env: ARCA_MOA_DESCUBRIR_CANCELADAS"
+        ),
+    )
+    arca_moa_cancelaciones_incluir_fuera_de_rango: bool = Field(
+        default=False,
+        description=(
+            "Si True, se procesan TODAS las cancelaciones devueltas por AFIP, aunque su "
+            "FechaOficializacion esté fuera del rango del fetch. Útil para reconstruir "
+            "historia completa. Default False (solo agrega cancelados con fecha en rango). "
+            "Env: ARCA_MOA_CANCELACIONES_INCLUIR_FUERA_DE_RANGO"
+        ),
+    )
+    arca_moa_log_raw_soap: bool = Field(
+        default=False,
+        description=(
+            "Si True, guarda en meta (y en raw_payloads vía fetch_runner) el XML SOAP "
+            "request/response de cada variante del listado MOA. Útil para diagnosticar "
+            "qué devuelve AFIP exactamente (p. ej. estado CANC sin fecha). Por tamaño "
+            "del XML, dejar en False fuera del diagnóstico. Env: ARCA_MOA_LOG_RAW_SOAP"
+        ),
+    )
 
     # Persistencia
     arca_data_dir: Path = Field(default=Path("data"))

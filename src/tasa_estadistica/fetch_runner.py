@@ -86,11 +86,20 @@ def execute_fetch(
         liqs, meta = client.fetch_liquidaciones(
             cuit, desde, hasta, ta_xml=ta_xml, on_progress=on_progress
         )
+        # Si ARCA_MOA_LOG_RAW_SOAP está activo, el meta trae los envelopes SOAP de los listados.
+        # Los guardamos en payloads separados para que el meta principal siga siendo legible.
+        raw_soap = meta.pop("raw_soap_listados", None) if isinstance(meta, dict) else None
         repo.save_raw_payload(
             run.run_id,
             "liquidaciones/meta",
             json.dumps(meta, ensure_ascii=False, indent=2),
         )
+        if raw_soap:
+            repo.save_raw_payload(
+                run.run_id,
+                "liquidaciones/raw_soap_listados",
+                json.dumps(raw_soap, ensure_ascii=False, indent=2),
+            )
         repo.save_liquidaciones(run.run_id, liqs, mapper)
 
         logger.info(
