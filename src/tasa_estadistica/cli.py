@@ -661,6 +661,112 @@ def cmd_refetch_caratula(args: argparse.Namespace) -> int:
     return 0 if err_count == 0 else 1
 
 
+def cmd_cancelaciones(args: argparse.Namespace) -> int:
+    """Lista cancelaciones detalladas del CUIT usando ConsultarCancelacionDetallada.
+
+    Útil para diagnosticar D.I. en estado CANC que DetalladaListaDeclaraciones NO devuelve.
+    Este servicio expone FechaOficializacion y FechaCancelacion por destinación (info que
+    la grilla de MOA web muestra pero el listado de AFIP WS oculta para CANC).
+
+    Con ``--desde`` y ``--hasta`` (opcionales) filtra por FechaOficializacion.
+    Con ``--id <D.I.>`` acota a una declaración específica.
+    """
+    from tasa_estadistica.arca.moa_declaracion import fetch_moa_cancelaciones_detalladas
+
+    s = get_settings()
+    if s.arca_mode.lower() != "live":
+        logger.error("ARCA_MODE=live requerido (actual: %s)", s.arca_mode)
+        return 2
+    if not s.arca_cert_path or not s.arca_cert_path.is_file():
+        logger.error(
+            "ARCA_CERT_PATH inválido o ausente: %s (requerido para WSAA en live).",
+            s.arca_cert_path,
+        )
+        return 2
+    cuit = (args.cuit or s.arca_cuit or "").strip()
+    if not cuit:
+        logger.error("Indique --cuit o configure ARCA_CUIT")
+        return 2
+
+    try:
+        ta_xml = WSAAClient(s).ensure_ticket(s.arca_ticket_path)
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.error("No pude obtener/reutilizar el TA WSAA: %s", e)
+        return 2
+
+    id_decl = (getattr(args, "id", "") or "").strip() or None
+    try:
+        cancelaciones = fetch_moa_cancelaciones_detalladas(
+            s, cuit, ta_xml, id_declaracion=id_decl
+        )
+    except RuntimeError as e:
+        logger.error("ConsultarCancelacionDetallada falló: %s", e)
+        return 2
+
+    desde_s = (getattr(args, "desde", "") or "").strip()
+    hasta_s = (getattr(args, "hasta", "") or "").strip()
+    fd: date | None = _parse_date(desde_s) if desde_s else None
+    fh: date | None = _parse_date(hasta_s) if hasta_s else None
+
+    def _parse_fecha(v):
+        if v is None:
+            return None
+        if isinstance(v, date):
+            return v
+        if isinstance(v, datetime):
+            return v.date()
+        s_ = str(v).strip()
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(s_[:19], fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    filas = []
+    for c in cancelaciones:
+        f_ofic = _parse_fecha(c.get("FechaOficializacion"))
+        if fd and (f_ofic is None or f_ofic < fd):
+            continue
+        if fh and (f_ofic is None or f_ofic > fh):
+            continue
+        filas.append(
+            {
+                "destinacion": str(c.get("DestinacionCancelada") or "").strip(),
+                "item": c.get("ItemCancelado"),
+                "subitem": c.get("SubitemCancelado"),
+                "estado": str(c.get("Estado") or "").strip(),
+                "modalidad": str(c.get("ModalidadCancelacion") or "").strip(),
+                "fecha_oficializacion": f_ofic.isoformat() if f_ofic else "",
+                "fecha_cancelacion": (
+                    _parse_fecha(c.get("FechaCancelacion")).isoformat()
+                    if _parse_fecha(c.get("FechaCancelacion"))
+                    else ""
+                ),
+            }
+        )
+
+    print(
+        f"CUIT {cuit} — ConsultarCancelacionDetallada:",
+        f"{len(cancelaciones)} cancelaciones AFIP, {len(filas)} tras filtros",
+    )
+    if not filas:
+        return 0
+    print()
+    header = f"{'DESTINACIÓN':<22} {'ESTADO':<6} {'OFIC':<12} {'CANC':<12} {'MODALIDAD':<14}"
+    print(header)
+    print("-" * len(header))
+    for f in sorted(
+        filas, key=lambda r: (r["fecha_oficializacion"] or "", r["destinacion"])
+    ):
+        print(
+            f"{f['destinacion']:<22} {f['estado']:<6} "
+            f"{f['fecha_oficializacion']:<12} {f['fecha_cancelacion']:<12} "
+            f"{f['modalidad']:<14}"
+        )
+    return 0
+
+
 def cmd_rebuild(args: argparse.Namespace) -> int:
     try:
         fd, fh = _parse_export_fechas(args)
@@ -835,6 +941,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Segundos a esperar entre meses (default 0; útil para no saturar AFIP).",
     )
 
+    pcanc = sub.add_parser(
+        "cancelaciones",
+        help=(
+            "Lista cancelaciones detalladas (AFIP) con FechaOficializacion y FechaCancelacion. "
+            "Útil para diagnosticar D.I. en estado CANC que no aparecen en el listado normal."
+        ),
+    )
+    pcanc.add_argument("--cuit", default="", help="CUIT (default: ARCA_CUIT)")
+    pcanc.add_argument(
+        "--id",
+        default="",
+        help="Opcional: IdentificadorDeclaracion a consultar (acota la respuesta)",
+    )
+    pcanc.add_argument(
+        "--desde",
+        default="",
+        help="Opcional: filtra por FechaOficializacion desde (YYYY-MM-DD)",
+    )
+    pcanc.add_argument(
+        "--hasta",
+        default="",
+        help="Opcional: filtra por FechaOficializacion hasta (YYYY-MM-DD)",
+    )
+
     pbs = sub.add_parser(
         "backfill-status",
         help="Imprime tabla anio/mes con estado del backfill (sin tocar AFIP).",
@@ -889,6 +1019,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_serve(args)
     if args.command == "refetch-caratula":
         return cmd_refetch_caratula(args)
+    if args.command == "cancelaciones":
+        return cmd_cancelaciones(args)
     if args.command == "backfill":
         return cmd_backfill(args)
     if args.command == "backfill-status":
